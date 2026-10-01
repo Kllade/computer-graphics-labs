@@ -1,65 +1,47 @@
-# 🌋 Vulkan Starter App
+# Компьютерная графика — лабораторная работа №1
 
-## Getting started
+**Основы 3D-графики. Вариант 11 — правильный икосаэдр** (номер в списке 23).
+C++20, Vulkan, GLFW, ImGui. Реализованы все шесть дополнительных заданий:
 
-You need C++ compiler, Vulkan SDK and CMake installed before you can build this project.
+1. Перспективная и ортографическая проекции.
+2. Перемещение, вращение и масштабирование по трём осям.
+3. Анимация по пространственной траектории с паузой и параметрами.
+4. Выбор цвета фигуры.
+5. Процедурные цвета вершин, умножаемые на выбранный цвет.
+6. Три объекта с отдельными uniform buffer и VkDescriptorSet.
 
-This project uses C++20 standard and thus requires either of those compilers:
-- GCC 10.X
-- Clang 10
-- Microsoft Visual Studio 2019
+## Сборка и запуск
 
-This is officially tested on *Windows* and *GNU/Linux platforms*, no *macOS* support yet.
-If you have a working macOS solution of this code, consider submitting a PR so others
-can build this example code without a hassle!
-
-<ins>**1. Downloading the repository**</ins>
-
-Start by cloning the repository with `git clone --depth 1 https://github.com/vladeemerr/vulkan-starter-app`
-
-This repository does not contain any submodules, it utilizes CMake's `FetchContent` feature instead.
-
-<ins>**2. Configuring the project**</ins>
-
-Run either one of the CMake lines to download dependencies and configure the project:
+Проверено на macOS Apple Silicon с Vulkan SDK 1.4.321.0.
 
 ```bash
-cmake --preset debug      # for GNU/Linux (GCC/Clang)
-cmake --preset msvc-debug # for Windows (Visual Studio 2019)
+git clone https://github.com/Kllade/computer-graphics-labs.git
+cd computer-graphics-labs
+bash run-macos.sh
 ```
 
-If you wish to build in `release` mode, change `debug` to `release`.
+Нужны Apple Clang, CMake и Vulkan SDK. По умолчанию SDK ищется в
+`$HOME/VulkanSDK/1.4.321.0/macOS`; для другого пути задайте `VULKAN_SDK`.
 
-If changes are made (added/removed files), or if you want to regenerate project files, rerun the command above.
+- [Полная инструкция для macOS](README-macOS.md)
+- [Управление, математика и устройство программы](README-LAB1.md)
+- [Отчёт PDF](reports/301BV_Rakhimov_Lab1.pdf)
+- [Отчёт Word](reports/301BV_Rakhimov_Lab1.docx)
 
-<ins>**3. Building**</ins>
+Пресеты Windows/Linux унаследованы от шаблона; на этих платформах текущая
+лабораторная работа не проверялась. Изменение размера окна пока отключено.
 
-To build the project, use the line below. You are most likely using `debug` preset, so
-the directory that will eventually contain your build files is named `build-debug`.
-
-Likewise for `release` that directory will be named `build-release`
-
-Run one those commands, depending on which preset you chose:
+## Проверки
 
 ```bash
-cmake --build build-debug --parallel # for debug
-cmake --build build-release --parallel # for release
+ctest --test-dir build-macos --output-on-failure
+CG_LAB_SMOKE=1 bash run-macos.sh
 ```
 
-### Running
+Тесты проверяют геометрию, проекции, трансформации и анимацию. Проверочный
+запуск отрисовывает 180 кадров с разными настройками и автоматически завершается.
 
-`build-*` directory will contain the executable in one of the subdirectories after successful build.
+## Основа проекта
 
-For `msvc-{debug|release}` builds output subdirectory is set to `Debug` or `Release` respectively.
-For other configurations output subdirectory is set to `vulkan-starter-app`.
-
-**Make sure your working directory is set to the project root!**
-Project root is where this README file resides. Otherwise, the
-code responsible for loading shaders or other resources from files will fail,
-because relative paths are used.
-
-### Compiling shaders
-
-`CMakeLists.txt` has a build recipe for compiling shader files
-along with an application. Look for a comment in this file to see
-how to compile your shaders.
+Использован [стартовый код преподавателя](https://github.com/vladeemerr/vulkan-starter-app).
+Исходная лицензия и уведомление сохранены в LICENSE и NOTICE.

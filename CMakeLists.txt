@@ -8,6 +8,11 @@ add_executable(${PROJECT_NAME} source/main.cpp source/graphics_internal.cpp sour
 if(LINUX)
 	target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 elseif(APPLE)
+	set_target_properties(${PROJECT_NAME} PROPERTIES
+		MACOSX_BUNDLE TRUE
+		MACOSX_BUNDLE_GUI_IDENTIFIER "local.cg.vulkan-starter-app"
+		MACOSX_BUNDLE_BUNDLE_NAME "Vulkan Starter App"
+	)
 	target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 elseif(MSVC)
 	target_compile_options(${PROJECT_NAME} PRIVATE /W4 /wd4201)
@@ -75,7 +80,7 @@ target_sources(${PROJECT_NAME} PRIVATE
 )
 
 # Compile shaders
-find_program(GLSLC_FOUND glslc)
+find_program(GLSLC_FOUND glslc HINTS "$ENV{VULKAN_SDK}/bin" REQUIRED)
 if(GLSLC_FOUND)
 	set(_SHADER_BINARIES)
 
@@ -86,7 +91,8 @@ if(GLSLC_FOUND)
 
 		add_custom_command(
 			OUTPUT ${SHADER_BINARY_PATH}
-			COMMAND glslc ${SHADER_SOURCE} -o ${SHADER_BINARY_PATH}
+			COMMAND "${GLSLC_FOUND}" "${SHADER_SOURCE}" -o "${SHADER_BINARY_PATH}"
+			VERBATIM
 			DEPENDS ${SHADER_SOURCE}
 			COMMENT "Compiling ${SHADER_FILE} shader"
 		)
@@ -97,9 +103,16 @@ if(GLSLC_FOUND)
 	# To compile shader file, use compile_shader function with a file name
 	# of a shader inside shaders directory. See example below:
 
-	# compile_shader(example.vert)
-	# compile_shader(example.frag)
+	compile_shader(icosahedron.vert)
+	compile_shader(icosahedron.frag)
 
 	add_custom_target(shaders DEPENDS ${_SHADER_BINARIES})
 	add_dependencies(${PROJECT_NAME} shaders)
+endif()
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(scene-tests tests/scene_tests.cpp)
+    target_include_directories(scene-tests PRIVATE source)
+    target_compile_features(scene-tests PRIVATE cxx_std_20)
+    add_test(NAME scene-math-and-geometry COMMAND scene-tests)
 endif()

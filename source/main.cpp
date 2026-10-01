@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <climits>
+#include <cstdlib>
 
 #include <iostream>
 
@@ -17,7 +18,7 @@ namespace {
 constexpr int32_t default_window_width = 1280;
 constexpr int32_t default_window_height = 720;
 
-constexpr char default_window_title[] = "Vulkan Starter App";
+constexpr char default_window_title[] = "Lab 1 | Icosahedron | Variant 11";
 
 GLFWwindow* glfw_window;
 
@@ -25,6 +26,7 @@ GLFWwindow* glfw_window;
 
 int main() {
 	int status = EXIT_SUCCESS;
+	int smokeFrames = 0;
 
 	if (!glfwInit()) {
 		std::cerr << "Failed to initialize GLFW\n";
@@ -32,6 +34,8 @@ int main() {
 	}
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+	// The upstream resize() function is still a stub.
+	glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
 	glfw_window = glfwCreateWindow(default_window_width, default_window_height,
 	                               default_window_title, nullptr, nullptr);
@@ -85,6 +89,7 @@ int main() {
 		graphics::internal::FrameData fd = graphics::internal::prepare();
 		application::render(fd);
 		graphics::internal::submitAndPresent();
+		if (std::getenv("CG_LAB_SMOKE") && ++smokeFrames >= 180) glfwSetWindowShouldClose(glfw_window, GLFW_TRUE);
 	}
 
 	application::shutdown();
@@ -99,5 +104,5 @@ err_imgui_init:
 err_null_window:
 	glfwTerminate();
 
-	return 0;
+	return status;
 }

@@ -1,2 +1,10 @@
 build-*/
 imgui.ini
+.DS_Store
+CMakeUserPresets.json
+
+# Generated shader bytecode
+shaders/*.spv
+
+# Personal VS Code configuration (absolute SDK paths)
+.vscode/

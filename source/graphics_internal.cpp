@@ -128,8 +128,9 @@ bool initializeImGUI(GLFWwindow* const window) {
 		return false;
 	}
 
-	int width = 0, height = 0;
-	glfwGetWindowSize(window, &width, &height);
+	(void)window;
+	const uint32_t width = context.swapchain_extent.width;
+	const uint32_t height = context.swapchain_extent.height;
 
 	const uint32_t swapchain_images_count = uint32_t(vk_swapchain_images.size());
 
@@ -229,7 +230,7 @@ Context context;
 
 bool initialize(GLFWwindow* const window) {
 	int width = 0, height = 0;
-	glfwGetWindowSize(window, &width, &height);
+	glfwGetFramebufferSize(window, &width, &height);
 
 	vkb::InstanceBuilder ib;
 
@@ -237,6 +238,10 @@ bool initialize(GLFWwindow* const window) {
 				 .request_validation_layers()
 				 .build();
 
+	if (!ibr) {
+		std::cerr << ibr.error().message() << '\n';
+		return false;
+	}
 	auto vkb_instance = ibr.value();
 	vk_instance = vkb_instance.instance;
 	vk_api_version = vkb_instance.api_version;
@@ -321,10 +326,27 @@ bool initialize(GLFWwindow* const window) {
 
 	const uint32_t swapchain_images_count = uint32_t(vk_swapchain_images.size());
 
+	// Select a depth format supported by the actual GPU (D24 is unavailable on Apple Silicon).
+	VkFormat depth_format = VK_FORMAT_UNDEFINED;
+	for (VkFormat candidate : {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D32_SFLOAT}) {
+		VkFormatProperties properties{};
+		vkGetPhysicalDeviceFormatProperties(context.physical_device, candidate, &properties);
+		if (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+			depth_format = candidate;
+			break;
+		}
+	}
+	if (depth_format == VK_FORMAT_UNDEFINED) {
+		std::cerr << "No supported depth attachment format\n";
+		return false;
+	}
+	width = static_cast<int>(context.swapchain_extent.width);
+	height = static_cast<int>(context.swapchain_extent.height);
+
 	const VkImageCreateInfo depth_buffer = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.imageType = VK_IMAGE_TYPE_2D,
-		.format = VK_FORMAT_D24_UNORM_S8_UINT,
+		.format = depth_format,
 		.extent = { uint32_t(width), uint32_t(height), 1 },
 		.mipLevels = 1,
 		.arrayLayers = 1,
@@ -350,7 +372,7 @@ bool initialize(GLFWwindow* const window) {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 		.image = vk_image_depth_buffer,
 		.viewType = VK_IMAGE_VIEW_TYPE_2D,
-		.format = VK_FORMAT_D24_UNORM_S8_UINT,
+		.format = depth_format,
 		.subresourceRange = {
 			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
 			.baseMipLevel = 0,
@@ -378,7 +400,7 @@ bool initialize(GLFWwindow* const window) {
 			.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		},
 		{
-			.format = VK_FORMAT_D24_UNORM_S8_UINT,
+			.format = depth_format,
 			.samples = VK_SAMPLE_COUNT_1_BIT,
 			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
