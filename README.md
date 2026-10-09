@@ -23,7 +23,6 @@ bash run-macos.sh
 Нужны Apple Clang, CMake и Vulkan SDK. По умолчанию SDK ищется в
 `$HOME/VulkanSDK/1.4.321.0/macOS`; для другого пути задайте `VULKAN_SDK`.
 
-- [План разработки: proposal / design / tasks](openspec/changes/lab1-icosahedron/proposal.md)
 - [Отчёт PDF](reports/301BV_Rakhimov_Lab1.pdf)
 - [Отчёт Word](reports/301BV_Rakhimov_Lab1.docx)
 
