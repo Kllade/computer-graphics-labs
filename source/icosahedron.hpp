@@ -1,19 +1,19 @@
 #pragma once
-#include "math.hpp"
+#include <glm/vec3.hpp>
 #include <array>
 #include <cstdint>
 
-// Исходная модель фигуры: геометрия и цвета. Преобразования экземпляров — в scene.hpp.
+// Правильный икосаэдр, центр (0, 0, 0), радиус описанной сферы 1.
 namespace icosahedron {
+// Нормализованные координаты: b / a = (1 + sqrt(5)) / 2 — золотое сечение.
+inline constexpr float a = 0.5257311f, b = 0.8506508f;
+inline const std::array<glm::vec3, 12> vertices = {{
+    {-a, b, 0}, {a, b, 0}, {-a, -b, 0}, {a, -b, 0},
+    {0, -a, b}, {0, a, b}, {0, -a, -b}, {0, a, -b},
+    {b, 0, -a}, {b, 0, a}, {-b, 0, -a}, {-b, 0, a}
+}};
 
-struct Vertex {
-    math::Vec3 position; // корды x y z
-    math::Vec3 color; // компоненты RGB
-};
-
-std::array<Vertex, 12> createVertices();
-
-// Каждая строка — одна треугольная грань. Обход направлен наружу.
+// Каждая строка — одна грань (три номера вершин), обход наружу.
 inline constexpr std::array<uint16_t, 60> indices = {
     0, 11, 5,
     0, 5, 1,
@@ -36,5 +36,4 @@ inline constexpr std::array<uint16_t, 60> indices = {
     8, 6, 7,
     9, 8, 1,
 };
-
 } // namespace icosahedron

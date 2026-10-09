@@ -1,35 +1,34 @@
-# Компьютерная графика — лабораторная работа №1
+# Лабораторная №1: основы 3D-графики
 
-**Основы 3D-графики. Вариант 11 — правильный икосаэдр**.
-C++20, Vulkan, GLFW, ImGui. Реализованы все шесть дополнительных заданий:
+Рахимов Михаил Юрьевич, М8О-301БВ-24. Номер 23 → вариант 11: **правильный икосаэдр**.
+Базовая версия без дополнительных заданий: один объект, фиксированные камера,
+перспектива и цвет. Стек: C++20, Vulkan, GLFW, ImGui, GLM.
 
-1. Перспективная и ортографическая проекции.
-2. Перемещение, вращение и масштабирование по трём осям.
-3. Анимация по пространственной траектории с паузой и параметрами.
-4. Выбор цвета фигуры.
-5. Процедурные цвета вершин, умножаемые на выбранный цвет.
-6. Три объекта с отдельными uniform buffer и VkDescriptorSet.
+## Запуск на macOS
 
-## Сборка и запуск
-
-Проверено на Vulkan SDK 1.4.321.0.
+Нужны Apple Clang, CMake и Vulkan SDK. При первой сборке нужен интернет.
+SDK по умолчанию: `$HOME/VulkanSDK/1.4.321.0/macOS`; другой путь задаётся через `VULKAN_SDK`.
+Из папки проекта:
 
 ```bash
-git clone https://github.com/Kllade/computer-graphics-labs.git
-cd computer-graphics-labs
 bash run-macos.sh
 ```
 
-Нужны Apple Clang, CMake и Vulkan SDK. По умолчанию SDK ищется в
-`$HOME/VulkanSDK/1.4.321.0/macOS`; для другого пути задайте `VULKAN_SDK`.
+В VS Code: `Terminal → Run Task → Vulkan: run`.
 
-- [План разработки: proposal / design / tasks](openspec/changes/lab1-icosahedron/proposal.md)
-- [Отчёт PDF](reports/301BV_Rakhimov_Lab1.pdf)
-- [Отчёт Word](reports/301BV_Rakhimov_Lab1.docx)
+## Код
 
-Пресеты Windows/Linux унаследованы от шаблона; на этих платформах текущая
-лабораторная работа не проверялась. Изменение размера окна пока отключено.
+- `source/icosahedron.hpp` — 12 вершин и 20 треугольных граней.
+- `source/application.cpp` — создание ресурсов, интерфейс и команды рисования.
+- `shaders/icosahedron.vert` — позиция вершины: `MVP * vec4(position, 1)`.
+- `shaders/icosahedron.frag` — синий цвет и фиксированная подсветка граней.
+- `source/main.cpp`, `graphics_internal.*` — [шаблон преподавателя](https://github.com/vladeemerr/vulkan-starter-app).
 
-## Основа проекта
+`initialize` создаёт ресурсы; `update` рисует ImGui; `render` передаёт матрицу
+`P * V * M` через push constants и рисует 60 индексов; `shutdown` освобождает ресурсы.
+Буфер глубины скрывает задние грани. UBO и дескрипторы для фигуры не используются.
+Сохранены исправления MoltenVK/Retina; окно фиксировано. Проверено только на macOS.
 
-Использован [стартовый код преподавателя](https://github.com/vladeemerr/vulkan-starter-app)
+[План разработки](openspec/changes/lab1-icosahedron/proposal.md).
+[Шпаргалка: 30 вопросов для защиты](DEFENSE-LAB1.md).
+Отчёт в `reports/` пока относится к прежней полной версии.
