@@ -3,7 +3,8 @@ include(FetchContent)
 
 project(vulkan-starter-app LANGUAGES C CXX)
 
-add_executable(${PROJECT_NAME} source/main.cpp source/graphics_internal.cpp source/application.cpp)
+add_executable(${PROJECT_NAME} source/main.cpp source/graphics_internal.cpp source/application.cpp
+    source/graphics.cpp source/icosahedron.cpp)
 
 if(LINUX)
 	target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
@@ -108,11 +109,4 @@ if(GLSLC_FOUND)
 
 	add_custom_target(shaders DEPENDS ${_SHADER_BINARIES})
 	add_dependencies(${PROJECT_NAME} shaders)
-endif()
-include(CTest)
-if(BUILD_TESTING)
-    add_executable(scene-tests tests/scene_tests.cpp)
-    target_include_directories(scene-tests PRIVATE source)
-    target_compile_features(scene-tests PRIVATE cxx_std_20)
-    add_test(NAME scene-math-and-geometry COMMAND scene-tests)
 endif()

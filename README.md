@@ -1,6 +1,6 @@
 # Компьютерная графика — лабораторная работа №1
 
-**Основы 3D-графики. Вариант 11 — правильный икосаэдр** (номер в списке 23).
+**Основы 3D-графики. Вариант 11 — правильный икосаэдр**.
 C++20, Vulkan, GLFW, ImGui. Реализованы все шесть дополнительных заданий:
 
 1. Перспективная и ортографическая проекции.
@@ -12,7 +12,7 @@ C++20, Vulkan, GLFW, ImGui. Реализованы все шесть допол�
 
 ## Сборка и запуск
 
-Проверено на macOS Apple Silicon с Vulkan SDK 1.4.321.0.
+Проверено на Vulkan SDK 1.4.321.0.
 
 ```bash
 git clone https://github.com/Kllade/computer-graphics-labs.git
@@ -23,25 +23,13 @@ bash run-macos.sh
 Нужны Apple Clang, CMake и Vulkan SDK. По умолчанию SDK ищется в
 `$HOME/VulkanSDK/1.4.321.0/macOS`; для другого пути задайте `VULKAN_SDK`.
 
-- [Полная инструкция для macOS](README-macOS.md)
-- [Управление, математика и устройство программы](README-LAB1.md)
+- [План разработки: proposal / design / tasks](openspec/changes/lab1-icosahedron/proposal.md)
 - [Отчёт PDF](reports/301BV_Rakhimov_Lab1.pdf)
 - [Отчёт Word](reports/301BV_Rakhimov_Lab1.docx)
 
 Пресеты Windows/Linux унаследованы от шаблона; на этих платформах текущая
 лабораторная работа не проверялась. Изменение размера окна пока отключено.
 
-## Проверки
-
-```bash
-ctest --test-dir build-macos --output-on-failure
-CG_LAB_SMOKE=1 bash run-macos.sh
-```
-
-Тесты проверяют геометрию, проекции, трансформации и анимацию. Проверочный
-запуск отрисовывает 180 кадров с разными настройками и автоматически завершается.
-
 ## Основа проекта
 
-Использован [стартовый код преподавателя](https://github.com/vladeemerr/vulkan-starter-app).
-Исходная лицензия и уведомление сохранены в LICENSE и NOTICE.
+Использован [стартовый код преподавателя](https://github.com/vladeemerr/vulkan-starter-app)

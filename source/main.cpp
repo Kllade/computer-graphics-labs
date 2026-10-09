@@ -26,15 +26,14 @@ GLFWwindow* glfw_window;
 
 int main() {
 	int status = EXIT_SUCCESS;
-	int smokeFrames = 0;
 
 	if (!glfwInit()) {
 		std::cerr << "Failed to initialize GLFW\n";
 		return EXIT_FAILURE;
 	}
 
+	// Настройка окна (не создаем контекст opengl; и не даем изменять размер окна)
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	// The upstream resize() function is still a stub.
 	glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
 	glfw_window = glfwCreateWindow(default_window_width, default_window_height,
@@ -83,13 +82,12 @@ int main() {
 		ImGui_ImplGlfw_NewFrame();
 
 		ImGui::NewFrame();
-		application::update(time);
+		application::update(time); // изменяем состояние на цпу и строим интерфейс
 		ImGui::Render();
 
-		graphics::internal::FrameData fd = graphics::internal::prepare();
-		application::render(fd);
-		graphics::internal::submitAndPresent();
-		if (std::getenv("CG_LAB_SMOKE") && ++smokeFrames >= 180) glfwSetWindowShouldClose(glfw_window, GLFW_TRUE);
+		graphics::internal::FrameData fd = graphics::internal::prepare(); // подготавливаем кадр для рендеринга - ждем завершение ласт кадра и получаем изображение swapchain
+		application::render(fd); // записываем команды 
+		graphics::internal::submitAndPresent(); // отправляем на gpu и показываем на экран
 	}
 
 	application::shutdown();

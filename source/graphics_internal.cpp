@@ -1,3 +1,8 @@
+// Основа — код преподавателя. Доп изменения для macOS:
+// 1. Размеры изображений для Retina: используем framebuffer и фактический размер swapchain.
+// 2. Выбираем поддерживаемый GPU формат глубины вместо жестко заданного D24.
+// 3. Проверяем ошибку создания Vulkan instance.
+
 #include "graphics_internal.hpp"
 
 #include <iostream>
@@ -229,9 +234,11 @@ void drawImGUI() {
 Context context;
 
 bool initialize(GLFWwindow* const window) {
+	// Получаем размер изображения в пикселях (на Retina он может быть больше размера окна)
 	int width = 0, height = 0;
 	glfwGetFramebufferSize(window, &width, &height);
 
+	// Создаем Vulkan instance (подключаем приложение к Vulkan и запрашиваем проверку ошибок API)
 	vkb::InstanceBuilder ib;
 
 	auto ibr = ib.require_api_version(VK_MAKE_VERSION(1, 1, 0))
@@ -246,6 +253,7 @@ bool initialize(GLFWwindow* const window) {
 	vk_instance = vkb_instance.instance;
 	vk_api_version = vkb_instance.api_version;
 
+	// Создаем surface (связываем Vulkan с окном, чтобы показывать в нем изображение)
 	if (glfwCreateWindowSurface(vk_instance, window, nullptr, &vk_surface) != VK_SUCCESS) {
 		const char *message = nullptr;
 		glfwGetError(&message);
@@ -253,6 +261,7 @@ bool initialize(GLFWwindow* const window) {
 		return false;
 	}
 
+	// Выбираем GPU (предпочитаем дискретный, но главное — возможность вывода в наше окно)
 	vkb::PhysicalDeviceSelector pds(vkb_instance, vk_surface);
 
 	auto pds_result = pds.prefer_gpu_device_type(vkb::PreferredDeviceType::discrete)
@@ -265,6 +274,7 @@ bool initialize(GLFWwindow* const window) {
 
 	auto vkb_physical_device = pds_result.value();
 
+	// Создаем логическое устройство (через него создаем ресурсы и отправляем работу GPU)
 	vkb::DeviceBuilder db(vkb_physical_device);
 
 	auto db_result = db.build();
@@ -275,9 +285,11 @@ bool initialize(GLFWwindow* const window) {
 
 	auto vkb_device = db_result.value();
 
+	// Сохраняем устройства в общем context (используем их далее в коде лабораторной)
 	context.physical_device = vkb_device.physical_device;
 	context.device = vkb_device.device;
 
+	// Получаем графическую очередь (сюда будем отправлять команды рисования)
 	if (auto result = vkb_device.get_queue(vkb::QueueType::graphics); result) {
 		context.graphics_queue = result.value();
 	} else {
@@ -285,6 +297,7 @@ bool initialize(GLFWwindow* const window) {
 		return false;
 	}
 
+	// Получаем индекс семейства очереди (он понадобится при создании пула команд)
 	if (auto result = vkb_device.get_queue_index(vkb::QueueType::graphics); result) {
 		context.graphics_queue_index = result.value();
 	} else {
@@ -292,6 +305,7 @@ bool initialize(GLFWwindow* const window) {
 		return false;
 	}
 
+	// Создаем VMA allocator (помощник выделения памяти для буферов и изображений Vulkan)
 	const VmaAllocatorCreateInfo allocator = {
 		.physicalDevice = context.physical_device,
 		.device = context.device,
@@ -304,6 +318,7 @@ bool initialize(GLFWwindow* const window) {
 		return false;
 	}
 
+	// Создаем swapchain (изображения для показа в окне; FIFO синхронизирует показ с обновлением экрана)
 	vkb::SwapchainBuilder sb(vkb_device);
 
 	auto sb_result = sb.use_default_format_selection()
@@ -317,6 +332,7 @@ bool initialize(GLFWwindow* const window) {
 
 	auto vkb_swapchain = sb_result.value();
 
+	// Сохраняем swapchain, его фактический размер, изображения и их views (представления для доступа)
 	vk_swapchain = vkb_swapchain.swapchain;
 	context.swapchain_format = vkb_swapchain.image_format;
 	context.swapchain_extent = vkb_swapchain.extent;
@@ -326,7 +342,7 @@ bool initialize(GLFWwindow* const window) {
 
 	const uint32_t swapchain_images_count = uint32_t(vk_swapchain_images.size());
 
-	// Select a depth format supported by the actual GPU (D24 is unavailable on Apple Silicon).
+	// Выбираем поддерживаемый формат глубины (проверяем GPU, потому что D24 может быть недоступен на macOS)
 	VkFormat depth_format = VK_FORMAT_UNDEFINED;
 	for (VkFormat candidate : {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D32_SFLOAT}) {
 		VkFormatProperties properties{};
@@ -340,9 +356,11 @@ bool initialize(GLFWwindow* const window) {
 		std::cerr << "No supported depth attachment format\n";
 		return false;
 	}
+	// Используем фактический размер swapchain (глубина и framebuffer должны иметь те же размеры)
 	width = static_cast<int>(context.swapchain_extent.width);
 	height = static_cast<int>(context.swapchain_extent.height);
 
+	// Создаем изображение глубины (позже depth test позволит ближним поверхностям закрывать дальние)
 	const VkImageCreateInfo depth_buffer = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.imageType = VK_IMAGE_TYPE_2D,
@@ -368,6 +386,7 @@ bool initialize(GLFWwindow* const window) {
 		return false;
 	}
 
+	// Создаем view глубины (указываем, какую часть изображения использовать при рисовании)
 	const VkImageViewCreateInfo depth_buffer_view = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 		.image = vk_image_depth_buffer,
@@ -388,6 +407,7 @@ bool initialize(GLFWwindow* const window) {
 		return false;
 	}
 
+	// Описываем вложения render pass: цвет и глубину (очищаем в начале, сохраняем после рисования)
 	const VkAttachmentDescription render_pass_attachments[] = {
 		{
 			.format = context.swapchain_format,
@@ -411,6 +431,7 @@ bool initialize(GLFWwindow* const window) {
 		},
 	};
 
+	// Указываем номера вложений (0 — цвет, 1 — глубина) и их layouts во время рисования
 	const VkAttachmentReference render_pass_color_attachment = {
 		.attachment = 0,
 		.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -421,6 +442,7 @@ bool initialize(GLFWwindow* const window) {
 		.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 	};
 
+	// Описываем один subpass (рисуем с использованием выбранных вложений цвета и глубины)
 	const VkSubpassDescription render_pass_subpass = {
 		.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
 		.colorAttachmentCount = 1,
@@ -428,6 +450,7 @@ bool initialize(GLFWwindow* const window) {
 		.pDepthStencilAttachment = &render_pass_depth_attachment,
 	};
 
+	// Создаем render pass (объединяем описание вложений и прохода рисования)
 	const VkRenderPassCreateInfo render_pass = {
 		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
 		.attachmentCount = sizeof(render_pass_attachments) / sizeof(render_pass_attachments[0]),
@@ -441,6 +464,7 @@ bool initialize(GLFWwindow* const window) {
 		return false;
 	}
 
+	// Создаем framebuffer для каждого изображения swapchain (свой цвет, общее изображение глубины)
 	VkImageView framebuffer_attachments[] = {
 		VK_NULL_HANDLE,
 		vk_image_view_depth_buffer
@@ -468,8 +492,10 @@ bool initialize(GLFWwindow* const window) {
 		}
 	}
 
+	// Создаем семафоры (GPU ждет доступное изображение, а показ — завершение рисования)
 	const VkSemaphoreCreateInfo semaphore = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
 
+	// Создаем fence для ожидания GPU на CPU (изначально сигнальный, чтобы первый кадр не ждал)
 	const VkFenceCreateInfo fence = {
 		.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
 		.flags = VK_FENCE_CREATE_SIGNALED_BIT,
@@ -496,6 +522,7 @@ bool initialize(GLFWwindow* const window) {
 		return false;
 	}
 
+	// Создаем пул команд графической очереди (из него выделяем command buffer; разрешаем его сброс)
 	const VkCommandPoolCreateInfo command_pool = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -507,6 +534,7 @@ bool initialize(GLFWwindow* const window) {
 		return false;
 	}
 
+	// Выделяем command buffer (в него будем записывать команды для GPU каждый кадр)
 	const VkCommandBufferAllocateInfo command_buffers = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
 		.commandPool = vk_command_pool,
@@ -519,11 +547,13 @@ bool initialize(GLFWwindow* const window) {
 		return false;
 	}
 
+	// Подключаем Vulkan-отрисовку ImGui (чтобы интерфейс рисовался поверх сцены)
 	if (!initializeImGUI(window)) {
 		std::cerr << "Failed to initialize ImGUI Vulkan rendering backend\n";
 		return false;
 	}
 
+	// Все объекты созданы (при ошибке выше возвращаем false, при успехе — true)
 	return true;
 }
 

@@ -24,7 +24,6 @@ bash run-macos.sh
 export VULKAN_SDK="$HOME/VulkanSDK/1.4.321.0/macOS"
 cmake --preset macos
 cmake --build --preset macos
-ctest --test-dir build-macos --output-on-failure
 ```
 
 Скрипт запуска задаёт переменные MoltenVK и рабочий каталог проекта.
@@ -40,16 +39,3 @@ ctest --test-dir build-macos --output-on-failure
 - Записывается командный буфер с render pass и очисткой фона.
 - Изменение размера окна отключено: обработчик upstream пока не реализован.
 - После обновления Vulkan SDK укажите новый VULKAN_SDK.
-
-## Исходный шаблон
-
-Проект основан на https://github.com/vladeemerr/vulkan-starter-app.
-Чтобы получать изменения преподавателя в свежем клоне:
-
-```bash
-git remote add upstream https://github.com/vladeemerr/vulkan-starter-app.git
-git fetch upstream
-```
-
-Перед объединением обновлений сохраните свои изменения. Автоматическое
-объединение с upstream здесь не выполняется.
