@@ -18,7 +18,7 @@ namespace {
 constexpr int32_t default_window_width = 1280;
 constexpr int32_t default_window_height = 720;
 
-constexpr char default_window_title[] = "Lab 1 | Icosahedron | Variant 11";
+constexpr char default_window_title[] = "Lab 2 | Camera and Lighting | Variant 11";
 
 GLFWwindow* glfw_window;
 

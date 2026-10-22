@@ -5,6 +5,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <imgui.h>
+#include <cstddef>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -15,16 +17,39 @@
 namespace application {
 namespace {
 
-// Только геометрия, один конвейер и одна матрица для одного объекта.
 struct Buffer {
     VkBuffer handle{};
     VmaAllocation allocation{};
+    void *mapped{};
 };
-Buffer vertexBuffer, indexBuffer;
+Buffer vertexBuffer, uniformBuffer;
+VkDescriptorSetLayout descriptorLayout{};
+VkDescriptorPool descriptorPool{};
+VkDescriptorSet descriptorSet{};
 VkPipelineLayout pipelineLayout{};
 VkPipeline pipeline{};
 VkShaderModule vertexShader{}, fragmentShader{};
-static_assert(sizeof(glm::mat4) == 64);
+
+// Порядок полей совпадает с uniform Scene в обоих шейдерах (std140).
+struct SceneData {
+    glm::mat4 viewProjection;
+    glm::vec4 cameraPosition;
+    glm::vec4 lightDirection;
+    glm::vec4 lightColor; // w — интенсивность
+    glm::vec4 albedo;
+    glm::vec4 specular;   // w — показатель степени блика
+    glm::vec4 ambient;    // w — интенсивность
+};
+static_assert(sizeof(SceneData) == 160);
+
+glm::vec3 cameraPosition(0.0f, 0.0f, 4.0f);
+glm::vec3 cameraRotation(0.0f); // pitch, yaw, roll в градусах
+float cameraFov = 45.0f;
+float lightAzimuth = 30.0f, lightElevation = 40.0f;
+glm::vec4 lightColor(1.0f, 1.0f, 1.0f, 1.0f);
+glm::vec4 albedo(0.25f, 0.65f, 0.9f, 1.0f);
+glm::vec4 specular(0.7f, 0.7f, 0.7f, 32.0f);
+glm::vec4 ambient(1.0f, 1.0f, 1.0f, 0.15f);
 
 void checkResult(VkResult result, const char *action) {
     if (result != VK_SUCCESS)
@@ -46,7 +71,8 @@ Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, const void *dat
     checkResult(vmaCreateBuffer(context.allocator, &info, &allocation, &out.handle, &out.allocation,
                                 &mapped),
                 "Create buffer");
-    std::memcpy(mapped.pMappedData, data, static_cast<size_t>(size));
+    out.mapped = mapped.pMappedData;
+    std::memcpy(out.mapped, data, static_cast<size_t>(size));
     VkResult result = vmaFlushAllocation(context.allocator, out.allocation, 0, size);
     if (result != VK_SUCCESS) {
         vmaDestroyBuffer(context.allocator, out.handle, out.allocation);
@@ -96,16 +122,19 @@ void createGraphicsPipeline() {
     stages[0].module = vertexShader;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = fragmentShader;
-    // 2. Вершина — три float: x, y, z.
-    VkVertexInputBindingDescription binding{0, sizeof(glm::vec3),
+    // 2. Вершина содержит позицию и процедурно вычисленную нормаль.
+    VkVertexInputBindingDescription binding{0, sizeof(icosahedron::Vertex),
                                             VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription position{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0};
+    const VkVertexInputAttributeDescription attributes[] = {
+        {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(icosahedron::Vertex, position)},
+        {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(icosahedron::Vertex, normal)},
+    };
     VkPipelineVertexInputStateCreateInfo input{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     input.vertexBindingDescriptionCount = 1;
     input.pVertexBindingDescriptions = &binding;
-    input.vertexAttributeDescriptionCount = 1;
-    input.pVertexAttributeDescriptions = &position;
+    input.vertexAttributeDescriptionCount = 2;
+    input.pVertexAttributeDescriptions = attributes;
     // 3. Сборка треугольников, viewport/scissor и растеризация.
     VkPipelineInputAssemblyStateCreateInfo assembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -163,17 +192,46 @@ void createGraphicsPipeline() {
 
 bool initialize() {
     try {
-        // Создаем буферы с вершинами и треугольниками икосаэдра.
-        vertexBuffer = createBuffer(sizeof(icosahedron::vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                    icosahedron::vertices.data());
-        indexBuffer = createBuffer(sizeof(icosahedron::indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                                   icosahedron::indices.data());
+        const auto vertices = icosahedron::makeVertices();
+        vertexBuffer = createBuffer(sizeof(vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                    vertices.data());
 
-        // Шейдер получает одну матрицу через push constants (без UBO и дескрипторов).
-        VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4)};
+        // Один uniform buffer и один набор дескрипторов для всей сцены.
+        const SceneData initial{};
+        uniformBuffer = createBuffer(sizeof(SceneData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &initial);
+        const auto device = graphics::internal::context.device;
+        const VkDescriptorSetLayoutBinding binding{
+            0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        VkDescriptorSetLayoutCreateInfo setLayout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        setLayout.bindingCount = 1;
+        setLayout.pBindings = &binding;
+        checkResult(vkCreateDescriptorSetLayout(device, &setLayout, nullptr, &descriptorLayout),
+                    "Create descriptor layout");
+        const VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1};
+        VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pool.maxSets = 1;
+        pool.poolSizeCount = 1;
+        pool.pPoolSizes = &poolSize;
+        checkResult(vkCreateDescriptorPool(device, &pool, nullptr, &descriptorPool),
+                    "Create descriptor pool");
+        VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocation.descriptorPool = descriptorPool;
+        allocation.descriptorSetCount = 1;
+        allocation.pSetLayouts = &descriptorLayout;
+        checkResult(vkAllocateDescriptorSets(device, &allocation, &descriptorSet), "Allocate descriptor set");
+        const VkDescriptorBufferInfo bufferInfo{uniformBuffer.handle, 0, sizeof(SceneData)};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = descriptorSet;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        write.pBufferInfo = &bufferInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-        layout.pushConstantRangeCount = 1;
-        layout.pPushConstantRanges = &range;
+        layout.setLayoutCount = 1;
+        layout.pSetLayouts = &descriptorLayout;
         checkResult(vkCreatePipelineLayout(graphics::internal::context.device, &layout, nullptr,
                                           &pipelineLayout), "Create pipeline layout");
         createGraphicsPipeline();
@@ -197,31 +255,71 @@ void shutdown() {
     if (fragmentShader)
         vkDestroyShaderModule(device, fragmentShader, nullptr);
     vertexShader = fragmentShader = VK_NULL_HANDLE;
-    destroyBuffer(indexBuffer);
+    if (descriptorPool)
+        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+    if (descriptorLayout)
+        vkDestroyDescriptorSetLayout(device, descriptorLayout, nullptr);
+    descriptorPool = VK_NULL_HANDLE;
+    descriptorLayout = VK_NULL_HANDLE;
+    descriptorSet = VK_NULL_HANDLE;
+    destroyBuffer(uniformBuffer);
     destroyBuffer(vertexBuffer);
     pipeline = VK_NULL_HANDLE;
     pipelineLayout = VK_NULL_HANDLE;
 }
 
 void update([[maybe_unused]] double time) {
-    // ImGui остается частью приложения; дополнительных настроек фигуры нет.
-    ImGui::Begin("Lab 1");
+    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(360, 610), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Lab 2");
+    ImGui::PushItemWidth(200.0f);
     ImGui::TextUnformatted("Icosahedron / Variant 11");
+    ImGui::SeparatorText("Camera");
+    ImGui::DragFloat3("Position", &cameraPosition.x, 0.05f);
+    ImGui::SliderFloat3("Pitch / Yaw / Roll", &cameraRotation.x, -180.0f, 180.0f);
+    ImGui::SliderFloat("FOV", &cameraFov, 10.0f, 120.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::Button("Reset camera")) {
+        cameraPosition = glm::vec3(0, 0, 4);
+        cameraRotation = glm::vec3(0);
+        cameraFov = 45.0f;
+    }
+    ImGui::SeparatorText("Directional light (towards source)");
+    ImGui::SliderFloat("Azimuth", &lightAzimuth, -180.0f, 180.0f);
+    ImGui::SliderFloat("Elevation", &lightElevation, -90.0f, 90.0f);
+    ImGui::ColorEdit3("Light color", &lightColor.x);
+    ImGui::SliderFloat("Light intensity", &lightColor.w, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SeparatorText("Material");
+    ImGui::ColorEdit3("Albedo", &albedo.x);
+    ImGui::ColorEdit3("Specular color", &specular.x);
+    ImGui::SliderFloat("Shininess", &specular.w, 1.0f, 128.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SeparatorText("Ambient light");
+    ImGui::ColorEdit3("Ambient color", &ambient.x);
+    ImGui::SliderFloat("Ambient intensity", &ambient.w, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::PopItemWidth();
     ImGui::End();
 }
 
 void render(const graphics::internal::FrameData &fd) {
     const auto &context = graphics::internal::context;
 
-    // Фиксированная камера и перспективная проекция. Модель стоит в начале координат.
+    // Модель стоит в начале координат; камера задается позицией и тремя углами.
     const float aspect = static_cast<float>(context.swapchain_extent.width) /
                          context.swapchain_extent.height;
-    const glm::mat4 model(1.0f);
-    const glm::mat4 view = glm::lookAtRH(glm::vec3(2.6f, 1.6f, 4.0f), glm::vec3(0),
-                                       glm::vec3(0, 1, 0));
-    glm::mat4 projection = glm::perspectiveRH_ZO(glm::radians(45.0f), aspect, 0.1f, 100.0f);
+    glm::mat4 rotation = glm::rotate(glm::mat4(1), glm::radians(cameraRotation.y), glm::vec3(0, 1, 0));
+    rotation = glm::rotate(rotation, glm::radians(cameraRotation.x), glm::vec3(1, 0, 0));
+    rotation = glm::rotate(rotation, glm::radians(cameraRotation.z), glm::vec3(0, 0, 1));
+    const glm::mat4 view = glm::transpose(rotation) * glm::translate(glm::mat4(1), -cameraPosition);
+    glm::mat4 projection = glm::perspectiveRH_ZO(glm::radians(cameraFov), aspect, 0.1f, 100.0f);
     projection[1][1] *= -1; // Коррекция Y для viewport Vulkan с положительной высотой.
-    const glm::mat4 mvp = projection * view * model;
+    const float azimuth = glm::radians(lightAzimuth), elevation = glm::radians(lightElevation);
+    const glm::vec3 lightDirection(std::cos(elevation) * std::sin(azimuth), std::sin(elevation),
+                                    std::cos(elevation) * std::cos(azimuth));
+    const SceneData scene{projection * view, glm::vec4(cameraPosition, 1),
+                          glm::vec4(lightDirection, 0), lightColor, albedo, specular, ambient};
+    // prepare() уже дождался прошлого кадра: можно обновлять общий буфер.
+    std::memcpy(uniformBuffer.mapped, &scene, sizeof(scene));
+    checkResult(vmaFlushAllocation(context.allocator, uniformBuffer.allocation, 0, sizeof(scene)),
+                "Flush scene buffer");
 
     // Начинаем запись команд и очищаем цвет и глубину.
     checkResult(vkResetCommandBuffer(fd.command_buffer, 0), "Reset commands");
@@ -241,12 +339,11 @@ void render(const graphics::internal::FrameData &fd) {
     vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &vertexBuffer.handle, &offset);
-    vkCmdBindIndexBuffer(fd.command_buffer, indexBuffer.handle, 0, VK_INDEX_TYPE_UINT16);
+    vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+                            0, 1, &descriptorSet, 0, nullptr);
 
-    // Передаем матрицу и рисуем 20 треугольников одним вызовом.
-    vkCmdPushConstants(fd.command_buffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
-                       0, sizeof(mvp), &mvp);
-    vkCmdDrawIndexed(fd.command_buffer, static_cast<uint32_t>(icosahedron::indices.size()), 1, 0, 0, 0);
+    // 60 вершин с нормалями граней образуют те же 20 треугольников.
+    vkCmdDraw(fd.command_buffer, static_cast<uint32_t>(icosahedron::indices.size()), 1, 0, 0);
     vkCmdEndRenderPass(fd.command_buffer);
     checkResult(vkEndCommandBuffer(fd.command_buffer), "End commands");
 }

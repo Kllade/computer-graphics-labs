@@ -1,6 +1,7 @@
 #pragma once
-#include <glm/vec3.hpp>
+#include <glm/glm.hpp>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 // Правильный икосаэдр, центр (0, 0, 0), радиус описанной сферы 1.
@@ -36,4 +37,24 @@ inline constexpr std::array<uint16_t, 60> indices = {
     8, 6, 7,
     9, 8, 1,
 };
+
+struct Vertex {
+    glm::vec3 position;
+    glm::vec3 normal;
+};
+
+inline std::array<Vertex, 60> makeVertices() {
+    std::array<Vertex, 60> result{};
+    for (std::size_t i = 0; i < indices.size(); i += 3) {
+        const auto p0 = vertices[indices[i]];
+        const auto p1 = vertices[indices[i + 1]];
+        const auto p2 = vertices[indices[i + 2]];
+        const auto normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+        // У каждой грани своя нормаль, поэтому общие позиции дублируются.
+        result[i] = {p0, normal};
+        result[i + 1] = {p1, normal};
+        result[i + 2] = {p2, normal};
+    }
+    return result;
+}
 } // namespace icosahedron

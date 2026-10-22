@@ -1,11 +1,20 @@
 #version 450
 layout(location = 0) in vec3 position;
-layout(push_constant) uniform Transform {
-    mat4 mvp;
-} transform;
+layout(location = 1) in vec3 normal;
+layout(set = 0, binding = 0, std140) uniform Scene {
+    mat4 viewProjection;
+    vec4 cameraPosition;
+    vec4 lightDirection;
+    vec4 lightColor;
+    vec4 albedo;
+    vec4 specular;
+    vec4 ambient;
+} scene;
 layout(location = 0) out vec3 worldPosition;
+layout(location = 1) out vec3 worldNormal;
 
 void main() {
-    gl_Position = transform.mvp * vec4(position, 1.0);
+    gl_Position = scene.viewProjection * vec4(position, 1.0);
     worldPosition = position; // Матрица модели единичная: локальная позиция совпадает с мировой.
+    worldNormal = normal;
 }
