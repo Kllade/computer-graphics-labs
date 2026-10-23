@@ -3,8 +3,12 @@ imgui.ini
 .DS_Store
 CMakeUserPresets.json
 
-# Generated shader bytecode
+# generated shader bytecode
 shaders/*.spv
 
-# Personal VS Code configuration (absolute SDK paths)
+# personal VS Code configuration (absolute SDK paths)
 .vscode/
+
+# local defense notes
+/docs/defense/
+/DEFENSE*.md

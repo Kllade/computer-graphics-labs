@@ -10,6 +10,7 @@ struct GLFWwindow;
 
 namespace graphics::internal {
 
+// общие ресурсы Vulkan
 struct Context {
 	VkPhysicalDevice physical_device;
 	VkDevice device;
@@ -25,6 +26,7 @@ struct Context {
 	VkRenderPass render_pass;
 };
 
+// данные текущего кадра
 struct FrameData {
 	VkFramebuffer framebuffer;
 	VkCommandBuffer command_buffer;

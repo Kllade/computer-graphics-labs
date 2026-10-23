@@ -24,6 +24,7 @@ GLFWwindow* glfw_window;
 
 } // namespace
 
+// окно, графика и главный цикл
 int main() {
 	int status = EXIT_SUCCESS;
 
@@ -32,7 +33,7 @@ int main() {
 		return EXIT_FAILURE;
 	}
 
-	// Настройка окна (не создаем контекст opengl; и не даем изменять размер окна)
+	// фиксированное окно без контекста OpenGL
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
@@ -82,14 +83,16 @@ int main() {
 		ImGui_ImplGlfw_NewFrame();
 
 		ImGui::NewFrame();
-		application::update(time); // изменяем состояние на цпу и строим интерфейс
+		application::update(time);
 		ImGui::Render();
 
-		graphics::internal::FrameData fd = graphics::internal::prepare(); // подготавливаем кадр для рендеринга - ждем завершение ласт кадра и получаем изображение swapchain
-		application::render(fd); // записываем команды 
-		graphics::internal::submitAndPresent(); // отправляем на gpu и показываем на экран
+		// ждём GPU перед обновлением данных кадра
+		graphics::internal::FrameData fd = graphics::internal::prepare();
+		application::render(fd);
+		graphics::internal::submitAndPresent();
 	}
 
+	// освобождение ресурсов в обратном порядке
 	application::shutdown();
 err_application_init:
 	graphics::internal::shutdown();

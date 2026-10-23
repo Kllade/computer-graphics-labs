@@ -9,6 +9,9 @@ fi
 export VK_DRIVER_FILES="$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json"
 export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
 export VK_ADD_LAYER_PATH="$VULKAN_SDK/share/vulkan/explicit_layer.d"
-cmake --preset macos
-cmake --build --preset macos
+cmake -S . -B build-macos -G "Unix Makefiles" \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build build-macos --parallel 4
 exec ./build-macos/vulkan-starter-app.app/Contents/MacOS/vulkan-starter-app

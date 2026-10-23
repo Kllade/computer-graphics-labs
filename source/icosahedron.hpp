@@ -4,9 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 
-// Правильный икосаэдр, центр (0, 0, 0), радиус описанной сферы 1.
+// икосаэдр с центром в нуле и радиусом 1
 namespace icosahedron {
-// Нормализованные координаты: b / a = (1 + sqrt(5)) / 2 — золотое сечение.
 inline constexpr float a = 0.5257311f, b = 0.8506508f;
 inline const std::array<glm::vec3, 12> vertices = {{
     {-a, b, 0}, {a, b, 0}, {-a, -b, 0}, {a, -b, 0},
@@ -14,7 +13,7 @@ inline const std::array<glm::vec3, 12> vertices = {{
     {b, 0, -a}, {b, 0, a}, {-b, 0, -a}, {-b, 0, a}
 }};
 
-// Каждая строка — одна грань (три номера вершин), обход наружу.
+// тройки индексов граней, обход наружу
 inline constexpr std::array<uint16_t, 60> indices = {
     0, 11, 5,
     0, 5, 1,
@@ -43,14 +42,15 @@ struct Vertex {
     glm::vec3 normal;
 };
 
+// 60 вершин: у каждой грани своя нормаль
 inline std::array<Vertex, 60> makeVertices() {
     std::array<Vertex, 60> result{};
     for (std::size_t i = 0; i < indices.size(); i += 3) {
         const auto p0 = vertices[indices[i]];
         const auto p1 = vertices[indices[i + 1]];
         const auto p2 = vertices[indices[i + 2]];
+        // единичная нормаль через векторное произведение рёбер
         const auto normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
-        // У каждой грани своя нормаль, поэтому общие позиции дублируются.
         result[i] = {p0, normal};
         result[i + 1] = {p1, normal};
         result[i + 2] = {p2, normal};

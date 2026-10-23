@@ -88,7 +88,7 @@ target_sources(${PROJECT_NAME} PRIVATE
 	${imgui_SOURCE_DIR}/imgui_widgets.cpp
 )
 
-# Compile shaders
+# compile shaders
 find_program(GLSLC_FOUND glslc HINTS "$ENV{VULKAN_SDK}/bin" REQUIRED)
 if(GLSLC_FOUND)
 	set(_SHADER_BINARIES)
@@ -109,7 +109,7 @@ if(GLSLC_FOUND)
 		list(APPEND _SHADER_BINARIES ${SHADER_BINARY_PATH})
 	endmacro()
 
-	# To compile shader file, use compile_shader function with a file name
+	# to compile shader file, use compile_shader function with a file name
 	# of a shader inside shaders directory. See example below:
 
 	compile_shader(icosahedron.vert)

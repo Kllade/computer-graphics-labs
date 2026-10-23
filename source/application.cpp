@@ -30,14 +30,14 @@ VkPipelineLayout pipelineLayout{};
 VkPipeline pipeline{};
 VkShaderModule vertexShader{}, fragmentShader{};
 
-// Порядок полей совпадает с uniform Scene в обоих шейдерах (std140).
+// поля UBO совпадают с блоком Scene в шейдерах
 struct SceneData {
-    glm::mat4 viewProjection;
+    glm::mat4 viewProjection; // матрица P * V
     glm::vec4 cameraPosition;
-    glm::vec4 lightDirection;
+    glm::vec4 lightDirection; // направление к свету
     glm::vec4 lightColor; // w — интенсивность
     glm::vec4 albedo;
-    glm::vec4 specular;   // w — показатель степени блика
+    glm::vec4 specular;   // w — степень блика
     glm::vec4 ambient;    // w — интенсивность
 };
 static_assert(sizeof(SceneData) == 160);
@@ -51,11 +51,13 @@ glm::vec4 albedo(0.25f, 0.65f, 0.9f, 1.0f);
 glm::vec4 specular(0.7f, 0.7f, 0.7f, 32.0f);
 glm::vec4 ambient(1.0f, 1.0f, 1.0f, 0.15f);
 
+// проверка результата Vulkan
 void checkResult(VkResult result, const char *action) {
     if (result != VK_SUCCESS)
         throw std::runtime_error(std::string(action) + ": " + std::to_string(result));
 }
 
+// создание и заполнение буфера
 Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, const void *data) {
     auto &context = graphics::internal::context;
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -73,6 +75,7 @@ Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, const void *dat
                 "Create buffer");
     out.mapped = mapped.pMappedData;
     std::memcpy(out.mapped, data, static_cast<size_t>(size));
+    // запись становится видимой GPU
     VkResult result = vmaFlushAllocation(context.allocator, out.allocation, 0, size);
     if (result != VK_SUCCESS) {
         vmaDestroyBuffer(context.allocator, out.handle, out.allocation);
@@ -81,6 +84,7 @@ Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, const void *dat
     return out;
 }
 
+// загрузка шейдера из SPIR-V
 VkShaderModule loadShader(const char *filename) {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
     if (!file)
@@ -102,15 +106,16 @@ VkShaderModule loadShader(const char *filename) {
     return result;
 }
 
+// освобождение буфера и памяти
 void destroyBuffer(Buffer &buffer) {
     if (buffer.handle)
         vmaDestroyBuffer(graphics::internal::context.allocator, buffer.handle, buffer.allocation);
     buffer = {};
 }
 
+// настройка графического конвейера
 void createGraphicsPipeline() {
     auto &context = graphics::internal::context;
-    // 1. Вершинный и фрагментный шейдеры.
     vertexShader = loadShader("shaders/icosahedron.vert.spv");
     fragmentShader = loadShader("shaders/icosahedron.frag.spv");
     VkPipelineShaderStageCreateInfo stages[2]{};
@@ -122,7 +127,7 @@ void createGraphicsPipeline() {
     stages[0].module = vertexShader;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = fragmentShader;
-    // 2. Вершина содержит позицию и процедурно вычисленную нормаль.
+    // входы шейдера: 0 — позиция, 1 — нормаль
     VkVertexInputBindingDescription binding{0, sizeof(icosahedron::Vertex),
                                             VK_VERTEX_INPUT_RATE_VERTEX};
     const VkVertexInputAttributeDescription attributes[] = {
@@ -135,13 +140,11 @@ void createGraphicsPipeline() {
     input.pVertexBindingDescriptions = &binding;
     input.vertexAttributeDescriptionCount = 2;
     input.pVertexAttributeDescriptions = attributes;
-    // 3. Сборка треугольников, viewport/scissor и растеризация.
     VkPipelineInputAssemblyStateCreateInfo assembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     VkPipelineViewportStateCreateInfo viewport{
         VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    // Окно фиксировано: viewport и scissor задаются один раз.
     const VkViewport area{0, 0, static_cast<float>(context.swapchain_extent.width),
                           static_cast<float>(context.swapchain_extent.height), 0, 1};
     const VkRect2D scissor{{0, 0}, context.swapchain_extent};
@@ -158,7 +161,7 @@ void createGraphicsPipeline() {
     VkPipelineMultisampleStateCreateInfo multisample{
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    // 4. Глубина отсеивает скрытые поверхности; смешивание цветов выключено.
+    // ближние поверхности закрывают дальние
     VkPipelineDepthStencilStateCreateInfo depth{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth.depthTestEnable = VK_TRUE;
@@ -171,7 +174,6 @@ void createGraphicsPipeline() {
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     blend.attachmentCount = 1;
     blend.pAttachments = &attachment;
-    // 5. Соединить настройки с pipeline layout и render pass преподавателя.
     VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     info.stageCount = 2;
     info.pStages = stages;
@@ -190,16 +192,20 @@ void createGraphicsPipeline() {
 
 } // namespace
 
+// создание ресурсов сцены
 bool initialize() {
     try {
+        // создаём вершины с нормалями
         const auto vertices = icosahedron::makeVertices();
+        // записываем вершины в буфер
         vertexBuffer = createBuffer(sizeof(vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                                     vertices.data());
 
-        // Один uniform buffer и один набор дескрипторов для всей сцены.
+        // создаём UBO для параметров сцены
         const SceneData initial{};
         uniformBuffer = createBuffer(sizeof(SceneData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &initial);
         const auto device = graphics::internal::context.device;
+        // создаём дескрипторы для доступа шейдеров к UBO
         const VkDescriptorSetLayoutBinding binding{
             0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -220,6 +226,7 @@ bool initialize() {
         allocation.descriptorSetCount = 1;
         allocation.pSetLayouts = &descriptorLayout;
         checkResult(vkAllocateDescriptorSets(device, &allocation, &descriptorSet), "Allocate descriptor set");
+        // связываем дескриптор с UBO
         const VkDescriptorBufferInfo bufferInfo{uniformBuffer.handle, 0, sizeof(SceneData)};
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         write.dstSet = descriptorSet;
@@ -229,11 +236,13 @@ bool initialize() {
         write.pBufferInfo = &bufferInfo;
         vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
+        // подключаем дескрипторы к схеме конвейера
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         layout.setLayoutCount = 1;
         layout.pSetLayouts = &descriptorLayout;
         checkResult(vkCreatePipelineLayout(graphics::internal::context.device, &layout, nullptr,
                                           &pipelineLayout), "Create pipeline layout");
+        // создаём графический конвейер
         createGraphicsPipeline();
         return true;
     } catch (const std::exception &error) {
@@ -243,6 +252,7 @@ bool initialize() {
     }
 }
 
+// ожидание GPU и освобождение сцены
 void shutdown() {
     const auto device = graphics::internal::context.device;
     vkDeviceWaitIdle(device);
@@ -268,7 +278,31 @@ void shutdown() {
     pipelineLayout = VK_NULL_HANDLE;
 }
 
+// настройки камеры, света и материала
 void update([[maybe_unused]] double time) {
+    const auto &io = ImGui::GetIO();
+    // мышь вращает камеру вокруг центра объекта
+    const bool dragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+    if (!io.WantCaptureMouse && (dragging || io.MouseWheel != 0.0f)) {
+        const float distance = glm::length(cameraPosition);
+        float azimuth = distance > 0.0001f ? std::atan2(cameraPosition.x, cameraPosition.z) : 0.0f;
+        float elevation = distance > 0.0001f
+            ? std::asin(glm::clamp(cameraPosition.y / distance, -1.0f, 1.0f)) : 0.0f;
+        if (dragging) {
+            azimuth -= glm::radians(io.MouseDelta.x * 0.2f);
+            elevation += glm::radians(io.MouseDelta.y * 0.2f);
+        }
+        elevation = glm::clamp(elevation, glm::radians(-89.0f), glm::radians(89.0f));
+        // колёсико меняет расстояние до объекта
+        const float radius = glm::clamp(distance * std::exp(-io.MouseWheel * 0.1f), 1.2f, 50.0f);
+        cameraPosition = radius * glm::vec3(std::sin(azimuth) * std::cos(elevation),
+                                            std::sin(elevation),
+                                            std::cos(azimuth) * std::cos(elevation));
+        // камера всегда смотрит на центр икосаэдра
+        cameraRotation = glm::vec3(-glm::degrees(elevation),
+                                   std::remainder(glm::degrees(azimuth), 360.0f), 0.0f);
+    }
+
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(360, 610), ImGuiCond_FirstUseEver);
     ImGui::Begin("Lab 2");
@@ -299,29 +333,33 @@ void update([[maybe_unused]] double time) {
     ImGui::End();
 }
 
+// обновление UBO и запись команд кадра
 void render(const graphics::internal::FrameData &fd) {
     const auto &context = graphics::internal::context;
 
-    // Модель стоит в начале координат; камера задается позицией и тремя углами.
     const float aspect = static_cast<float>(context.swapchain_extent.width) /
                          context.swapchain_extent.height;
+    // вращение камеры: Ry * Rx * Rz
     glm::mat4 rotation = glm::rotate(glm::mat4(1), glm::radians(cameraRotation.y), glm::vec3(0, 1, 0));
     rotation = glm::rotate(rotation, glm::radians(cameraRotation.x), glm::vec3(1, 0, 0));
     rotation = glm::rotate(rotation, glm::radians(cameraRotation.z), glm::vec3(0, 0, 1));
+    // view — обратное преобразование камеры
     const glm::mat4 view = glm::transpose(rotation) * glm::translate(glm::mat4(1), -cameraPosition);
+    // перспектива: near = 0.1, far = 100
     glm::mat4 projection = glm::perspectiveRH_ZO(glm::radians(cameraFov), aspect, 0.1f, 100.0f);
-    projection[1][1] *= -1; // Коррекция Y для viewport Vulkan с положительной высотой.
+    projection[1][1] *= -1; // коррекция Y для Vulkan
+    // направление к свету из двух углов
     const float azimuth = glm::radians(lightAzimuth), elevation = glm::radians(lightElevation);
     const glm::vec3 lightDirection(std::cos(elevation) * std::sin(azimuth), std::sin(elevation),
                                     std::cos(elevation) * std::cos(azimuth));
+    // матрица модели единичная
     const SceneData scene{projection * view, glm::vec4(cameraPosition, 1),
                           glm::vec4(lightDirection, 0), lightColor, albedo, specular, ambient};
-    // prepare() уже дождался прошлого кадра: можно обновлять общий буфер.
+    // после prepare() буфер можно перезаписать
     std::memcpy(uniformBuffer.mapped, &scene, sizeof(scene));
     checkResult(vmaFlushAllocation(context.allocator, uniformBuffer.allocation, 0, sizeof(scene)),
                 "Flush scene buffer");
 
-    // Начинаем запись команд и очищаем цвет и глубину.
     checkResult(vkResetCommandBuffer(fd.command_buffer, 0), "Reset commands");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -335,14 +373,13 @@ void render(const graphics::internal::FrameData &fd) {
     pass.pClearValues = clears;
     vkCmdBeginRenderPass(fd.command_buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
 
-    // Подключаем конвейер и геометрию.
     vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &vertexBuffer.handle, &offset);
     vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
                             0, 1, &descriptorSet, 0, nullptr);
 
-    // 60 вершин с нормалями граней образуют те же 20 треугольников.
+    // 20 граней, по 3 вершины с общей нормалью
     vkCmdDraw(fd.command_buffer, static_cast<uint32_t>(icosahedron::indices.size()), 1, 0, 0);
     vkCmdEndRenderPass(fd.command_buffer);
     checkResult(vkEndCommandBuffer(fd.command_buffer), "End commands");

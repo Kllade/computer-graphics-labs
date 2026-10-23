@@ -12,15 +12,19 @@ layout(set = 0, binding = 0, std140) uniform Scene {
 } scene;
 layout(location = 0) out vec4 outputColor;
 
+// блинн–Фонг: фон + диффузный свет + блик
 void main() {
     vec3 N = normalize(worldNormal);
-    vec3 L = normalize(scene.lightDirection.xyz); // Направление от поверхности к свету.
+    vec3 L = normalize(scene.lightDirection.xyz); // к источнику света
+    // вектор V — к камере, H — полувектор между L и V
     vec3 toCamera = scene.cameraPosition.xyz - worldPosition;
     vec3 V = toCamera / max(length(toCamera), 0.0001);
     vec3 H = (L + V) / max(length(L + V), 0.0001);
 
+    // диффузный свет: косинус угла между N и L
     float diffuse = max(dot(N, L), 0.0);
     float specular = 0.0;
+    // блик только на освещённой стороне
     if (diffuse > 0.0)
         specular = pow(max(dot(N, H), 0.0), scene.specular.w);
 

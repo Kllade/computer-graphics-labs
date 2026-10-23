@@ -13,8 +13,9 @@ layout(set = 0, binding = 0, std140) uniform Scene {
 layout(location = 0) out vec3 worldPosition;
 layout(location = 1) out vec3 worldNormal;
 
+// преобразование позиции и передача нормали
 void main() {
     gl_Position = scene.viewProjection * vec4(position, 1.0);
-    worldPosition = position; // Матрица модели единичная: локальная позиция совпадает с мировой.
+    worldPosition = position; // матрица модели единичная
     worldNormal = normal;
 }
