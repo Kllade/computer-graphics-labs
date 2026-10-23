@@ -1,5 +1,4 @@
 #include <cstdint>
-#include <climits>
 #include <cstdlib>
 
 #include <iostream>
@@ -87,8 +86,8 @@ int main() {
 		ImGui::Render();
 
 		// ждём GPU перед обновлением данных кадра
-		graphics::internal::FrameData fd = graphics::internal::prepare();
-		application::render(fd);
+		const auto frame = graphics::internal::prepare();
+		application::render(frame);
 		graphics::internal::submitAndPresent();
 	}
 

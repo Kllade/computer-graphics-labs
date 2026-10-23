@@ -3,6 +3,7 @@
 #include "graphics_internal.hpp"
 
 #include <iostream>
+#include <iterator>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -56,7 +57,7 @@ VkCommandPool vk_imgui_command_pool;
 VkCommandBuffer vk_imgui_command_buffer;
 
 // подготовка ImGui; сцена под интерфейсом сохраняется
-bool initializeImGUI(GLFWwindow* const window) {
+bool initializeImGUI() {
 	const VkDescriptorPoolSize descriptor_pool_sizes[] = {
 		{
 			.type = VK_DESCRIPTOR_TYPE_SAMPLER,
@@ -72,7 +73,7 @@ bool initializeImGUI(GLFWwindow* const window) {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 		.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
 		.maxSets = uint32_t(vk_swapchain_images.size()),
-		.poolSizeCount = sizeof(descriptor_pool_sizes) / sizeof(descriptor_pool_sizes[0]),
+		.poolSizeCount = std::size(descriptor_pool_sizes),
 		.pPoolSizes = descriptor_pool_sizes,
 	};
 
@@ -131,7 +132,6 @@ bool initializeImGUI(GLFWwindow* const window) {
 		return false;
 	}
 
-	(void)window;
 	const uint32_t width = context.swapchain_extent.width;
 	const uint32_t height = context.swapchain_extent.height;
 
@@ -143,8 +143,8 @@ bool initializeImGUI(GLFWwindow* const window) {
 		.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 		.renderPass = vk_imgui_render_pass,
 		.attachmentCount = 1,
-		.width = uint32_t(width),
-		.height = uint32_t(height),
+		.width = width,
+		.height = height,
 		.layers = 1,
 	};
 
@@ -234,10 +234,6 @@ Context context;
 
 // создание общих ресурсов Vulkan
 bool initialize(GLFWwindow* const window) {
-	// на Retina нужен размер framebuffer в пикселях
-	int width = 0, height = 0;
-	glfwGetFramebufferSize(window, &width, &height);
-
 	vkb::InstanceBuilder ib;
 
 	auto ibr = ib.require_api_version(VK_MAKE_VERSION(1, 1, 0))
@@ -349,14 +345,14 @@ bool initialize(GLFWwindow* const window) {
 		std::cerr << "No supported depth attachment format\n";
 		return false;
 	}
-	width = static_cast<int>(context.swapchain_extent.width);
-	height = static_cast<int>(context.swapchain_extent.height);
+	const auto width = context.swapchain_extent.width;
+	const auto height = context.swapchain_extent.height;
 
 	const VkImageCreateInfo depth_buffer = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.imageType = VK_IMAGE_TYPE_2D,
 		.format = depth_format,
-		.extent = { uint32_t(width), uint32_t(height), 1 },
+		.extent = { width, height, 1 },
 		.mipLevels = 1,
 		.arrayLayers = 1,
 		.samples = VK_SAMPLE_COUNT_1_BIT,
@@ -440,7 +436,7 @@ bool initialize(GLFWwindow* const window) {
 
 	const VkRenderPassCreateInfo render_pass = {
 		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-		.attachmentCount = sizeof(render_pass_attachments) / sizeof(render_pass_attachments[0]),
+		.attachmentCount = std::size(render_pass_attachments),
 		.pAttachments = render_pass_attachments,
 		.subpassCount = 1,
 		.pSubpasses = &render_pass_subpass,
@@ -460,10 +456,10 @@ bool initialize(GLFWwindow* const window) {
 	const VkFramebufferCreateInfo framebuffer = {
 		.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 		.renderPass = context.render_pass,
-		.attachmentCount = sizeof(framebuffer_attachments) / sizeof(framebuffer_attachments[0]),
+		.attachmentCount = std::size(framebuffer_attachments),
 		.pAttachments = framebuffer_attachments,
-		.width = uint32_t(width),
-		.height = uint32_t(height),
+		.width = width,
+		.height = height,
 		.layers = 1,
 	};
 
@@ -498,7 +494,7 @@ bool initialize(GLFWwindow* const window) {
 		}
 	}
 
-	if (vkCreateSemaphore(context.device, &semaphore, NULL,
+	if (vkCreateSemaphore(context.device, &semaphore, nullptr,
 						  &vk_semaphore_image_available) != VK_SUCCESS) {
 		std::cerr << "Failed to create Vulkan semaphore for available image\n";
 		return false;
@@ -533,7 +529,7 @@ bool initialize(GLFWwindow* const window) {
 		return false;
 	}
 
-	if (!initializeImGUI(window)) {
+	if (!initializeImGUI()) {
 		std::cerr << "Failed to initialize ImGUI Vulkan rendering backend\n";
 		return false;
 	}
@@ -548,8 +544,8 @@ void shutdown() {
 	ImGui_ImplVulkan_Shutdown();
 
 	vkDestroyCommandPool(context.device, vk_imgui_command_pool, nullptr);
-	for (size_t i = 0, n = vk_imgui_framebuffers.size(); i < n; ++i) {
-		vkDestroyFramebuffer(context.device, vk_imgui_framebuffers[i], nullptr);
+	for (const auto framebuffer : vk_imgui_framebuffers) {
+		vkDestroyFramebuffer(context.device, framebuffer, nullptr);
 	}
 	vkDestroyRenderPass(context.device, vk_imgui_render_pass, nullptr);
 	vkDestroyDescriptorPool(context.device, vk_imgui_descriptor_pool, nullptr);
@@ -557,21 +553,21 @@ void shutdown() {
 	vkDestroyCommandPool(context.device, vk_command_pool, nullptr);
 
 	vkDestroyFence(context.device, vk_fence_frame_in_flight, nullptr);
-	for (size_t i = 0, n = vk_swapchain_images.size(); i < n; ++i) {
-		vkDestroySemaphore(context.device, vk_semaphores_image_finished[i], nullptr);
+	for (const auto semaphore : vk_semaphores_image_finished) {
+		vkDestroySemaphore(context.device, semaphore, nullptr);
 	}
 	vkDestroySemaphore(context.device, vk_semaphore_image_available, nullptr);
 
-	for (size_t i = 0, n = vk_swapchain_images.size(); i < n; ++i) {
-		vkDestroyFramebuffer(context.device, vk_framebuffers[i], nullptr);
+	for (const auto framebuffer : vk_framebuffers) {
+		vkDestroyFramebuffer(context.device, framebuffer, nullptr);
 	}
 	vkDestroyRenderPass(context.device, context.render_pass, nullptr);
 
 	vkDestroyImageView(context.device, vk_image_view_depth_buffer, nullptr);
 	vmaDestroyImage(context.allocator, vk_image_depth_buffer, vma_allocation_depth_buffer);
 
-	for (size_t i = 0, n = vk_swapchain_images.size(); i < n; ++i) {
-		vkDestroyImageView(context.device, vk_swapchain_image_views[i], nullptr);
+	for (const auto image_view : vk_swapchain_image_views) {
+		vkDestroyImageView(context.device, image_view, nullptr);
 	}
 	vkDestroySwapchainKHR(context.device, vk_swapchain, nullptr);
 
@@ -637,7 +633,7 @@ void submitAndPresent() {
 		.waitSemaphoreCount = 1,
 		.pWaitSemaphores = &vk_semaphore_image_available,
 		.pWaitDstStageMask = &stage,
-		.commandBufferCount = sizeof(command_buffers) / sizeof(command_buffers[0]),
+		.commandBufferCount = std::size(command_buffers),
 		.pCommandBuffers = command_buffers,
 		.signalSemaphoreCount = 1,
 		.pSignalSemaphores = &vk_semaphores_image_finished[vk_swapchain_current_image],

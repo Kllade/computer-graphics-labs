@@ -69,19 +69,19 @@ Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, const void *dat
     allocation.flags =
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     VmaAllocationInfo mapped{};
-    Buffer out;
-    checkResult(vmaCreateBuffer(context.allocator, &info, &allocation, &out.handle, &out.allocation,
+    Buffer buffer;
+    checkResult(vmaCreateBuffer(context.allocator, &info, &allocation, &buffer.handle, &buffer.allocation,
                                 &mapped),
                 "Create buffer");
-    out.mapped = mapped.pMappedData;
-    std::memcpy(out.mapped, data, static_cast<size_t>(size));
+    buffer.mapped = mapped.pMappedData;
+    std::memcpy(buffer.mapped, data, static_cast<size_t>(size));
     // запись становится видимой GPU
-    VkResult result = vmaFlushAllocation(context.allocator, out.allocation, 0, size);
+    VkResult result = vmaFlushAllocation(context.allocator, buffer.allocation, 0, size);
     if (result != VK_SUCCESS) {
-        vmaDestroyBuffer(context.allocator, out.handle, out.allocation);
+        vmaDestroyBuffer(context.allocator, buffer.handle, buffer.allocation);
         checkResult(result, "Flush buffer");
     }
-    return out;
+    return buffer;
 }
 
 // загрузка шейдера из SPIR-V
@@ -89,16 +89,16 @@ VkShaderModule loadShader(const char *filename) {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
     if (!file)
         throw std::runtime_error(std::string("Cannot open shader: ") + filename);
-    auto length = file.tellg();
-    if (length <= 0 || length % 4 != 0)
+    const auto length = file.tellg();
+    if (length <= 0 || length % sizeof(uint32_t) != 0)
         throw std::runtime_error("Invalid SPIR-V length");
-    std::vector<uint32_t> code(static_cast<size_t>(length) / 4);
+    std::vector<uint32_t> code(static_cast<size_t>(length) / sizeof(uint32_t));
     file.seekg(0);
     file.read(reinterpret_cast<char *>(code.data()), length);
     if (!file)
         throw std::runtime_error("Cannot read SPIR-V");
     VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    info.codeSize = code.size() * 4;
+    info.codeSize = code.size() * sizeof(uint32_t);
     info.pCode = code.data();
     VkShaderModule result{};
     checkResult(vkCreateShaderModule(graphics::internal::context.device, &info, nullptr, &result),
@@ -190,6 +190,55 @@ void createGraphicsPipeline() {
                 "Create graphics pipeline");
 }
 
+// вращение вокруг объекта и приближение мышью
+void updateCameraFromMouse() {
+    const auto &io = ImGui::GetIO();
+    const bool dragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+    if (io.WantCaptureMouse || (!dragging && io.MouseWheel == 0.0f))
+        return;
+
+    const float distance = glm::length(cameraPosition);
+    float azimuth = distance > 0.0001f ? std::atan2(cameraPosition.x, cameraPosition.z) : 0.0f;
+    float elevation = distance > 0.0001f
+        ? std::asin(glm::clamp(cameraPosition.y / distance, -1.0f, 1.0f)) : 0.0f;
+    if (dragging) {
+        azimuth -= glm::radians(io.MouseDelta.x * 0.2f);
+        elevation += glm::radians(io.MouseDelta.y * 0.2f);
+    }
+    elevation = glm::clamp(elevation, glm::radians(-89.0f), glm::radians(89.0f));
+    // колёсико меняет расстояние до объекта
+    const float radius = glm::clamp(distance * std::exp(-io.MouseWheel * 0.1f), 1.2f, 50.0f);
+    cameraPosition = radius * glm::vec3(std::sin(azimuth) * std::cos(elevation),
+                                        std::sin(elevation),
+                                        std::cos(azimuth) * std::cos(elevation));
+    // камера всегда смотрит на центр икосаэдра
+    cameraRotation = glm::vec3(-glm::degrees(elevation),
+                               std::remainder(glm::degrees(azimuth), 360.0f), 0.0f);
+}
+
+// матрицы камеры и параметры освещения для UBO
+SceneData makeSceneData() {
+    const auto &context = graphics::internal::context;
+    const float aspect = static_cast<float>(context.swapchain_extent.width) /
+                         context.swapchain_extent.height;
+    // вращение камеры: Ry * Rx * Rz
+    glm::mat4 rotation = glm::rotate(glm::mat4(1), glm::radians(cameraRotation.y), glm::vec3(0, 1, 0));
+    rotation = glm::rotate(rotation, glm::radians(cameraRotation.x), glm::vec3(1, 0, 0));
+    rotation = glm::rotate(rotation, glm::radians(cameraRotation.z), glm::vec3(0, 0, 1));
+    // view — обратное преобразование камеры
+    const glm::mat4 view = glm::transpose(rotation) * glm::translate(glm::mat4(1), -cameraPosition);
+    // перспектива: near = 0.1, far = 100
+    glm::mat4 projection = glm::perspectiveRH_ZO(glm::radians(cameraFov), aspect, 0.1f, 100.0f);
+    projection[1][1] *= -1; // коррекция Y для Vulkan
+    // направление к свету из двух углов
+    const float azimuth = glm::radians(lightAzimuth), elevation = glm::radians(lightElevation);
+    const glm::vec3 lightDirection(std::cos(elevation) * std::sin(azimuth), std::sin(elevation),
+                                    std::cos(elevation) * std::cos(azimuth));
+    // матрица модели единичная
+    return SceneData{projection * view, glm::vec4(cameraPosition, 1),
+                     glm::vec4(lightDirection, 0), lightColor, albedo, specular, ambient};
+}
+
 } // namespace
 
 // создание ресурсов сцены
@@ -240,7 +289,7 @@ bool initialize() {
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         layout.setLayoutCount = 1;
         layout.pSetLayouts = &descriptorLayout;
-        checkResult(vkCreatePipelineLayout(graphics::internal::context.device, &layout, nullptr,
+        checkResult(vkCreatePipelineLayout(device, &layout, nullptr,
                                           &pipelineLayout), "Create pipeline layout");
         // создаём графический конвейер
         createGraphicsPipeline();
@@ -280,28 +329,7 @@ void shutdown() {
 
 // настройки камеры, света и материала
 void update([[maybe_unused]] double time) {
-    const auto &io = ImGui::GetIO();
-    // мышь вращает камеру вокруг центра объекта
-    const bool dragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left);
-    if (!io.WantCaptureMouse && (dragging || io.MouseWheel != 0.0f)) {
-        const float distance = glm::length(cameraPosition);
-        float azimuth = distance > 0.0001f ? std::atan2(cameraPosition.x, cameraPosition.z) : 0.0f;
-        float elevation = distance > 0.0001f
-            ? std::asin(glm::clamp(cameraPosition.y / distance, -1.0f, 1.0f)) : 0.0f;
-        if (dragging) {
-            azimuth -= glm::radians(io.MouseDelta.x * 0.2f);
-            elevation += glm::radians(io.MouseDelta.y * 0.2f);
-        }
-        elevation = glm::clamp(elevation, glm::radians(-89.0f), glm::radians(89.0f));
-        // колёсико меняет расстояние до объекта
-        const float radius = glm::clamp(distance * std::exp(-io.MouseWheel * 0.1f), 1.2f, 50.0f);
-        cameraPosition = radius * glm::vec3(std::sin(azimuth) * std::cos(elevation),
-                                            std::sin(elevation),
-                                            std::cos(azimuth) * std::cos(elevation));
-        // камера всегда смотрит на центр икосаэдра
-        cameraRotation = glm::vec3(-glm::degrees(elevation),
-                                   std::remainder(glm::degrees(azimuth), 360.0f), 0.0f);
-    }
+    updateCameraFromMouse();
 
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(360, 610), ImGuiCond_FirstUseEver);
@@ -334,54 +362,37 @@ void update([[maybe_unused]] double time) {
 }
 
 // обновление UBO и запись команд кадра
-void render(const graphics::internal::FrameData &fd) {
+void render(const graphics::internal::FrameData &frame) {
     const auto &context = graphics::internal::context;
 
-    const float aspect = static_cast<float>(context.swapchain_extent.width) /
-                         context.swapchain_extent.height;
-    // вращение камеры: Ry * Rx * Rz
-    glm::mat4 rotation = glm::rotate(glm::mat4(1), glm::radians(cameraRotation.y), glm::vec3(0, 1, 0));
-    rotation = glm::rotate(rotation, glm::radians(cameraRotation.x), glm::vec3(1, 0, 0));
-    rotation = glm::rotate(rotation, glm::radians(cameraRotation.z), glm::vec3(0, 0, 1));
-    // view — обратное преобразование камеры
-    const glm::mat4 view = glm::transpose(rotation) * glm::translate(glm::mat4(1), -cameraPosition);
-    // перспектива: near = 0.1, far = 100
-    glm::mat4 projection = glm::perspectiveRH_ZO(glm::radians(cameraFov), aspect, 0.1f, 100.0f);
-    projection[1][1] *= -1; // коррекция Y для Vulkan
-    // направление к свету из двух углов
-    const float azimuth = glm::radians(lightAzimuth), elevation = glm::radians(lightElevation);
-    const glm::vec3 lightDirection(std::cos(elevation) * std::sin(azimuth), std::sin(elevation),
-                                    std::cos(elevation) * std::cos(azimuth));
-    // матрица модели единичная
-    const SceneData scene{projection * view, glm::vec4(cameraPosition, 1),
-                          glm::vec4(lightDirection, 0), lightColor, albedo, specular, ambient};
+    const SceneData scene = makeSceneData();
     // после prepare() буфер можно перезаписать
     std::memcpy(uniformBuffer.mapped, &scene, sizeof(scene));
     checkResult(vmaFlushAllocation(context.allocator, uniformBuffer.allocation, 0, sizeof(scene)),
                 "Flush scene buffer");
 
-    checkResult(vkResetCommandBuffer(fd.command_buffer, 0), "Reset commands");
+    checkResult(vkResetCommandBuffer(frame.command_buffer, 0), "Reset commands");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    checkResult(vkBeginCommandBuffer(fd.command_buffer, &begin), "Begin commands");
+    checkResult(vkBeginCommandBuffer(frame.command_buffer, &begin), "Begin commands");
     const VkClearValue clears[] = {{.color = {{.025f, .038f, .06f, 1}}}, {.depthStencil = {1, 0}}};
     VkRenderPassBeginInfo pass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     pass.renderPass = context.render_pass;
-    pass.framebuffer = fd.framebuffer;
+    pass.framebuffer = frame.framebuffer;
     pass.renderArea.extent = context.swapchain_extent;
     pass.clearValueCount = 2;
     pass.pClearValues = clears;
-    vkCmdBeginRenderPass(fd.command_buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBeginRenderPass(frame.command_buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
 
-    vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindPipeline(frame.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     const VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &vertexBuffer.handle, &offset);
-    vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+    vkCmdBindVertexBuffers(frame.command_buffer, 0, 1, &vertexBuffer.handle, &offset);
+    vkCmdBindDescriptorSets(frame.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
                             0, 1, &descriptorSet, 0, nullptr);
 
     // 20 граней, по 3 вершины с общей нормалью
-    vkCmdDraw(fd.command_buffer, static_cast<uint32_t>(icosahedron::indices.size()), 1, 0, 0);
-    vkCmdEndRenderPass(fd.command_buffer);
-    checkResult(vkEndCommandBuffer(fd.command_buffer), "End commands");
+    vkCmdDraw(frame.command_buffer, static_cast<uint32_t>(icosahedron::indices.size()), 1, 0, 0);
+    vkCmdEndRenderPass(frame.command_buffer);
+    checkResult(vkEndCommandBuffer(frame.command_buffer), "End commands");
 }
 } // namespace application
