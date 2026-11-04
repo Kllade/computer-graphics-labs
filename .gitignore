@@ -5,6 +5,7 @@ CMakeUserPresets.json
 
 # generated shader bytecode
 shaders/*.spv
+labs/*/shaders/*.spv
 
 # personal VS Code configuration (absolute SDK paths)
 .vscode/

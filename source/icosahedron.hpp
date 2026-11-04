@@ -40,6 +40,7 @@ inline constexpr std::array<uint16_t, 60> indices = {
 struct Vertex {
     glm::vec3 position;
     glm::vec3 normal;
+    glm::vec2 uv; // координаты на изображении
 };
 
 // 60 вершин: у каждой грани своя нормаль
@@ -51,9 +52,10 @@ inline std::array<Vertex, 60> makeVertices() {
         const auto p2 = vertices[indices[i + 2]];
         // единичная нормаль через векторное произведение рёбер
         const auto normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
-        result[i] = {p0, normal};
-        result[i + 1] = {p1, normal};
-        result[i + 2] = {p2, normal};
+        // один и тот же участок текстуры на каждой треугольной грани
+        result[i] = {p0, normal, {0, 0}};
+        result[i + 1] = {p1, normal, {1, 0}};
+        result[i + 2] = {p2, normal, {0.5f, 1}};
     }
     return result;
 }

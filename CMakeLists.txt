@@ -3,7 +3,22 @@ include(FetchContent)
 
 project(vulkan-starter-app LANGUAGES C CXX)
 
-add_executable(${PROJECT_NAME} source/main.cpp source/graphics_internal.cpp source/application.cpp)
+# Одна общая инфраструктура, отдельный код и шейдеры для каждой работы.
+set(LAB_NUMBER "3" CACHE STRING "Laboratory number: 1, 2 or 3")
+if(NOT LAB_NUMBER MATCHES "^[123]$")
+	message(FATAL_ERROR "LAB_NUMBER must be 1, 2 or 3")
+endif()
+if(LAB_NUMBER STREQUAL "3")
+	set(LAB_SOURCE source/application.cpp)
+	set(SHADER_DIR ${CMAKE_SOURCE_DIR}/shaders)
+else()
+	set(LAB_SOURCE labs/lab${LAB_NUMBER}/source/application.cpp)
+	set(SHADER_DIR ${CMAKE_SOURCE_DIR}/labs/lab${LAB_NUMBER}/shaders)
+endif()
+
+add_executable(${PROJECT_NAME} source/main.cpp source/graphics_internal.cpp ${LAB_SOURCE})
+set_source_files_properties(source/main.cpp PROPERTIES COMPILE_DEFINITIONS "LAB_NUMBER=${LAB_NUMBER}")
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/source)
 
 if(LINUX)
 	target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
@@ -55,6 +70,12 @@ FetchContent_Declare(
 )
 set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 
+FetchContent_Declare(
+	lodepng
+	GIT_REPOSITORY https://github.com/lvandeve/lodepng.git
+	GIT_TAG 7b2893e35891c0c85bee5595caafaf3c2044b409
+)
+
 find_package(Vulkan REQUIRED)
 
 set(GLFW_LIBRARY_TYPE STATIC)
@@ -68,7 +89,12 @@ FetchContent_MakeAvailable(
 	VulkanMemoryAllocator
 	imgui
 	glm
+	lodepng
 )
+
+# декодирование PNG в массив пикселей RGBA8
+target_sources(${PROJECT_NAME} PRIVATE ${lodepng_SOURCE_DIR}/lodepng.cpp)
+target_include_directories(${PROJECT_NAME} PRIVATE ${lodepng_SOURCE_DIR})
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
 	glfw
@@ -94,9 +120,9 @@ if(GLSLC_FOUND)
 	set(_SHADER_BINARIES)
 
 	macro(compile_shader SHADER_FILE)
-		set(SHADER_SOURCE ${CMAKE_SOURCE_DIR}/shaders/${SHADER_FILE})
+		set(SHADER_SOURCE ${SHADER_DIR}/${SHADER_FILE})
 		set(SHADER_BINARY ${SHADER_FILE}.spv)
-		set(SHADER_BINARY_PATH ${CMAKE_SOURCE_DIR}/shaders/${SHADER_BINARY})
+		set(SHADER_BINARY_PATH ${SHADER_DIR}/${SHADER_BINARY})
 
 		add_custom_command(
 			OUTPUT ${SHADER_BINARY_PATH}

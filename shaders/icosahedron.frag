@@ -1,19 +1,21 @@
 #version 450
 layout(location = 0) in vec3 worldPosition;
 layout(location = 1) in vec3 worldNormal;
+layout(location = 2) in vec2 textureUV;
 layout(set = 0, binding = 0, std140) uniform Scene {
     mat4 viewProjection;
     vec4 cameraPosition;
     vec4 lightDirection;
     vec4 lightColor;
-    vec4 albedo;
     vec4 specular;
     vec4 ambient;
 } scene;
+layout(set = 0, binding = 1) uniform sampler2D albedoTexture;
 layout(location = 0) out vec4 outputColor;
 
 // блинн–Фонг: фон + диффузный свет + блик
 void main() {
+    vec3 albedo = texture(albedoTexture, textureUV).rgb; // цвет поверхности из PNG
     vec3 N = normalize(worldNormal);
     vec3 L = normalize(scene.lightDirection.xyz); // к источнику света
     // вектор V — к камере, H — полувектор между L и V
@@ -28,8 +30,8 @@ void main() {
     if (diffuse > 0.0)
         specular = pow(max(dot(N, H), 0.0), scene.specular.w);
 
-    vec3 ambient = scene.ambient.rgb * scene.ambient.w * scene.albedo.rgb;
+    vec3 ambient = scene.ambient.rgb * scene.ambient.w * albedo;
     vec3 direct = scene.lightColor.rgb * scene.lightColor.w
-                * (scene.albedo.rgb * diffuse + scene.specular.rgb * specular);
+                * (albedo * diffuse + scene.specular.rgb * specular);
     outputColor = vec4(ambient + direct, 1.0);
 }

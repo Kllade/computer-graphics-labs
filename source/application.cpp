@@ -5,6 +5,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <imgui.h>
+#include <lodepng.h>
 #include <cstddef>
 #include <cmath>
 #include <cstring>
@@ -22,7 +23,13 @@ struct Buffer {
     VmaAllocation allocation{};
     void *mapped{};
 };
-Buffer vertexBuffer, uniformBuffer;
+Buffer vertexBuffer, uniformBuffer, stagingBuffer;
+VkDeviceSize uniformStride{}; // шаг между записями динамического UBO
+VkImage textureImage{};
+VmaAllocation textureAllocation{};
+VkImageView textureView{};
+VkSampler textureSampler{};
+VkCommandPool uploadPool{}; // временный пул команд загрузки
 VkDescriptorSetLayout descriptorLayout{};
 VkDescriptorPool descriptorPool{};
 VkDescriptorSet descriptorSet{};
@@ -36,18 +43,16 @@ struct SceneData {
     glm::vec4 cameraPosition;
     glm::vec4 lightDirection; // направление к свету
     glm::vec4 lightColor; // w — интенсивность
-    glm::vec4 albedo;
     glm::vec4 specular;   // w — степень блика
     glm::vec4 ambient;    // w — интенсивность
 };
-static_assert(sizeof(SceneData) == 160);
+static_assert(sizeof(SceneData) == 144);
 
 glm::vec3 cameraPosition(0.0f, 0.0f, 4.0f);
 glm::vec3 cameraRotation(0.0f); // pitch, yaw, roll в градусах
 float cameraFov = 45.0f;
 float lightAzimuth = 30.0f, lightElevation = 40.0f;
 glm::vec4 lightColor(1.0f, 1.0f, 1.0f, 1.0f);
-glm::vec4 albedo(0.25f, 0.65f, 0.9f, 1.0f);
 glm::vec4 specular(0.7f, 0.7f, 0.7f, 32.0f);
 glm::vec4 ambient(1.0f, 1.0f, 1.0f, 0.15f);
 
@@ -57,8 +62,8 @@ void checkResult(VkResult result, const char *action) {
         throw std::runtime_error(std::string(action) + ": " + std::to_string(result));
 }
 
-// создание и заполнение буфера
-Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, const void *data) {
+// hostVisible: CPU пишет в UBO/staging; геометрию заполняет GPU
+Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible) {
     auto &context = graphics::internal::context;
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     info.size = size;
@@ -66,21 +71,18 @@ Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, const void *dat
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VmaAllocationCreateInfo allocation{};
     allocation.usage = VMA_MEMORY_USAGE_AUTO;
-    allocation.flags =
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    if (hostVisible) {
+        allocation.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                           VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    } else {
+        allocation.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    }
     VmaAllocationInfo mapped{};
     Buffer buffer;
     checkResult(vmaCreateBuffer(context.allocator, &info, &allocation, &buffer.handle, &buffer.allocation,
                                 &mapped),
                 "Create buffer");
     buffer.mapped = mapped.pMappedData;
-    std::memcpy(buffer.mapped, data, static_cast<size_t>(size));
-    // запись становится видимой GPU
-    VkResult result = vmaFlushAllocation(context.allocator, buffer.allocation, 0, size);
-    if (result != VK_SUCCESS) {
-        vmaDestroyBuffer(context.allocator, buffer.handle, buffer.allocation);
-        checkResult(result, "Flush buffer");
-    }
     return buffer;
 }
 
@@ -113,6 +115,121 @@ void destroyBuffer(Buffer &buffer) {
     buffer = {};
 }
 
+// один раз загружаем текстуру и вершины через staging в память устройства
+void uploadResources() {
+    const auto &context = graphics::internal::context;
+    std::vector<unsigned char> pixels;
+    unsigned width{}, height{};
+    const unsigned error = lodepng::decode(pixels, width, height, "textures/albedo.png");
+    if (error)
+        throw std::runtime_error(std::string("Cannot load textures/albedo.png: ") +
+                                 lodepng_error_text(error));
+
+    // изображение будет целью копирования и источником цвета для шейдера
+    VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    image.imageType = VK_IMAGE_TYPE_2D;
+    image.format = VK_FORMAT_R8G8B8A8_SRGB;
+    image.extent = {width, height, 1};
+    image.mipLevels = 1;
+    image.arrayLayers = 1;
+    image.samples = VK_SAMPLE_COUNT_1_BIT;
+    image.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VmaAllocationCreateInfo allocation{};
+    allocation.usage = VMA_MEMORY_USAGE_AUTO;
+    allocation.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    checkResult(vmaCreateImage(context.allocator, &image, &allocation, &textureImage,
+                               &textureAllocation, nullptr), "Create texture");
+
+    const auto vertices = icosahedron::makeVertices();
+    const VkDeviceSize vertexSize = sizeof(vertices), imageSize = pixels.size();
+    vertexBuffer = createBuffer(vertexSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
+    // staging хранит сначала вершины, затем плотно упакованные пиксели RGBA8
+    stagingBuffer = createBuffer(vertexSize + imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+    auto *data = static_cast<unsigned char *>(stagingBuffer.mapped);
+    std::memcpy(data, vertices.data(), vertexSize);
+    std::memcpy(data + vertexSize, pixels.data(), imageSize);
+    checkResult(vmaFlushAllocation(context.allocator, stagingBuffer.allocation, 0, VK_WHOLE_SIZE),
+                "Flush staging buffer");
+
+    VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pool.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool.queueFamilyIndex = context.graphics_queue_index;
+    checkResult(vkCreateCommandPool(context.device, &pool, nullptr, &uploadPool), "Create upload pool");
+    VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    commandInfo.commandPool = uploadPool;
+    commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    commandInfo.commandBufferCount = 1;
+    VkCommandBuffer commands{};
+    checkResult(vkAllocateCommandBuffers(context.device, &commandInfo, &commands), "Allocate upload commands");
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    checkResult(vkBeginCommandBuffer(commands, &begin), "Begin upload");
+
+    // UNDEFINED → TRANSFER_DST: подготавливаем изображение к записи
+    VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    imageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    imageBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    imageBarrier.image = textureImage;
+    imageBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &imageBarrier);
+
+    const VkBufferCopy vertexCopy{0, 0, vertexSize};
+    vkCmdCopyBuffer(commands, stagingBuffer.handle, vertexBuffer.handle, 1, &vertexCopy);
+    VkBufferImageCopy imageCopy{};
+    imageCopy.bufferOffset = vertexSize;
+    imageCopy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    imageCopy.imageExtent = {width, height, 1};
+    vkCmdCopyBufferToImage(commands, stagingBuffer.handle, textureImage,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &imageCopy);
+
+    // запись при копировании должна завершиться до чтения при отрисовке
+    VkBufferMemoryBarrier vertexBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    vertexBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vertexBarrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    vertexBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    vertexBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    vertexBarrier.buffer = vertexBuffer.handle;
+    vertexBarrier.size = VK_WHOLE_SIZE;
+    imageBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    imageBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    imageBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 1, &vertexBarrier, 1, &imageBarrier);
+    checkResult(vkEndCommandBuffer(commands), "End upload");
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &commands;
+    checkResult(vkQueueSubmit(context.graphics_queue, 1, &submit, VK_NULL_HANDLE), "Submit upload");
+    checkResult(vkQueueWaitIdle(context.graphics_queue), "Wait for upload");
+    // GPU закончил копирование: временные ресурсы больше не нужны
+    vkDestroyCommandPool(context.device, uploadPool, nullptr);
+    uploadPool = VK_NULL_HANDLE;
+    destroyBuffer(stagingBuffer);
+
+    // view выбирает изображение, sampler задаёт правила выборки его цвета
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view.image = textureImage;
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = image.format;
+    view.subresourceRange = imageBarrier.subresourceRange;
+    checkResult(vkCreateImageView(context.device, &view, nullptr, &textureView), "Create texture view");
+    VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    checkResult(vkCreateSampler(context.device, &sampler, nullptr, &textureSampler), "Create sampler");
+}
+
 // настройка графического конвейера
 void createGraphicsPipeline() {
     auto &context = graphics::internal::context;
@@ -127,18 +244,19 @@ void createGraphicsPipeline() {
     stages[0].module = vertexShader;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = fragmentShader;
-    // входы шейдера: 0 — позиция, 1 — нормаль
+    // входы шейдера: 0 — позиция, 1 — нормаль, 2 — UV
     VkVertexInputBindingDescription binding{0, sizeof(icosahedron::Vertex),
                                             VK_VERTEX_INPUT_RATE_VERTEX};
     const VkVertexInputAttributeDescription attributes[] = {
         {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(icosahedron::Vertex, position)},
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(icosahedron::Vertex, normal)},
+        {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(icosahedron::Vertex, uv)},
     };
     VkPipelineVertexInputStateCreateInfo input{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     input.vertexBindingDescriptionCount = 1;
     input.pVertexBindingDescriptions = &binding;
-    input.vertexAttributeDescriptionCount = 2;
+    input.vertexAttributeDescriptionCount = 3;
     input.pVertexAttributeDescriptions = attributes;
     VkPipelineInputAssemblyStateCreateInfo assembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -236,7 +354,7 @@ SceneData makeSceneData() {
                                     std::cos(elevation) * std::cos(azimuth));
     // матрица модели единичная
     return SceneData{projection * view, glm::vec4(cameraPosition, 1),
-                     glm::vec4(lightDirection, 0), lightColor, albedo, specular, ambient};
+                     glm::vec4(lightDirection, 0), lightColor, specular, ambient};
 }
 
 } // namespace
@@ -244,30 +362,34 @@ SceneData makeSceneData() {
 // создание ресурсов сцены
 bool initialize() {
     try {
-        // создаём вершины с нормалями
-        const auto vertices = icosahedron::makeVertices();
-        // записываем вершины в буфер
-        vertexBuffer = createBuffer(sizeof(vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                    vertices.data());
-
-        // создаём UBO для параметров сцены
-        const SceneData initial{};
-        uniformBuffer = createBuffer(sizeof(SceneData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &initial);
-        const auto device = graphics::internal::context.device;
-        // создаём дескрипторы для доступа шейдеров к UBO
-        const VkDescriptorSetLayoutBinding binding{
-            0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        uploadResources();
+        const auto &context = graphics::internal::context;
+        const auto device = context.device;
+        // шаг записей UBO округляется вверх по требованию устройства
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(context.physical_device, &properties);
+        const VkDeviceSize alignment = properties.limits.minUniformBufferOffsetAlignment;
+        uniformStride = (sizeof(SceneData) + alignment - 1) / alignment * alignment;
+        // одна фигура — одна запись; для N фигур размер был бы N * uniformStride
+        uniformBuffer = createBuffer(uniformStride, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true);
+        const VkDescriptorSetLayoutBinding bindings[] = {
+            {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1,
+             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+            {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        };
         VkDescriptorSetLayoutCreateInfo setLayout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        setLayout.bindingCount = 1;
-        setLayout.pBindings = &binding;
+        setLayout.bindingCount = 2;
+        setLayout.pBindings = bindings;
         checkResult(vkCreateDescriptorSetLayout(device, &setLayout, nullptr, &descriptorLayout),
                     "Create descriptor layout");
-        const VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1};
+        const VkDescriptorPoolSize poolSizes[] = {
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+        };
         VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pool.maxSets = 1;
-        pool.poolSizeCount = 1;
-        pool.pPoolSizes = &poolSize;
+        pool.poolSizeCount = 2;
+        pool.pPoolSizes = poolSizes;
         checkResult(vkCreateDescriptorPool(device, &pool, nullptr, &descriptorPool),
                     "Create descriptor pool");
         VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -275,15 +397,23 @@ bool initialize() {
         allocation.descriptorSetCount = 1;
         allocation.pSetLayouts = &descriptorLayout;
         checkResult(vkAllocateDescriptorSets(device, &allocation, &descriptorSet), "Allocate descriptor set");
-        // связываем дескриптор с UBO
+        // в одном наборе: запись UBO и пара изображение–сэмплер
         const VkDescriptorBufferInfo bufferInfo{uniformBuffer.handle, 0, sizeof(SceneData)};
-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet = descriptorSet;
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        write.pBufferInfo = &bufferInfo;
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        const VkDescriptorImageInfo imageInfo{textureSampler, textureView,
+                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet writes[2]{};
+        for (auto &write : writes) {
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = descriptorSet;
+            write.descriptorCount = 1;
+        }
+        writes[0].dstBinding = 0;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        writes[0].pBufferInfo = &bufferInfo;
+        writes[1].dstBinding = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[1].pImageInfo = &imageInfo;
+        vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
         // подключаем дескрипторы к схеме конвейера
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -321,6 +451,21 @@ void shutdown() {
     descriptorPool = VK_NULL_HANDLE;
     descriptorLayout = VK_NULL_HANDLE;
     descriptorSet = VK_NULL_HANDLE;
+    if (textureSampler)
+        vkDestroySampler(device, textureSampler, nullptr);
+    if (textureView)
+        vkDestroyImageView(device, textureView, nullptr);
+    if (textureImage)
+        vmaDestroyImage(graphics::internal::context.allocator, textureImage, textureAllocation);
+    textureSampler = VK_NULL_HANDLE;
+    textureView = VK_NULL_HANDLE;
+    textureImage = VK_NULL_HANDLE;
+    textureAllocation = VK_NULL_HANDLE;
+    // также освобождаем временные ресурсы, если загрузка прервалась ошибкой
+    if (uploadPool)
+        vkDestroyCommandPool(device, uploadPool, nullptr);
+    uploadPool = VK_NULL_HANDLE;
+    destroyBuffer(stagingBuffer);
     destroyBuffer(uniformBuffer);
     destroyBuffer(vertexBuffer);
     pipeline = VK_NULL_HANDLE;
@@ -333,7 +478,7 @@ void update([[maybe_unused]] double time) {
 
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(360, 610), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Lab 2");
+    ImGui::Begin("Lab 3");
     ImGui::PushItemWidth(200.0f);
     ImGui::TextUnformatted("Icosahedron / Variant 11");
     ImGui::SeparatorText("Camera");
@@ -351,7 +496,7 @@ void update([[maybe_unused]] double time) {
     ImGui::ColorEdit3("Light color", &lightColor.x);
     ImGui::SliderFloat("Light intensity", &lightColor.w, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SeparatorText("Material");
-    ImGui::ColorEdit3("Albedo", &albedo.x);
+    ImGui::TextUnformatted("Albedo: textures/albedo.png");
     ImGui::ColorEdit3("Specular color", &specular.x);
     ImGui::SliderFloat("Shininess", &specular.w, 1.0f, 128.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SeparatorText("Ambient light");
@@ -387,8 +532,10 @@ void render(const graphics::internal::FrameData &frame) {
     vkCmdBindPipeline(frame.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(frame.command_buffer, 0, 1, &vertexBuffer.handle, &offset);
+    // запись i находится по смещению i * uniformStride; у нас одна запись, i = 0
+    const uint32_t dynamicOffset = 0;
     vkCmdBindDescriptorSets(frame.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
-                            0, 1, &descriptorSet, 0, nullptr);
+                            0, 1, &descriptorSet, 1, &dynamicOffset);
 
     // 20 граней, по 3 вершины с общей нормалью
     vkCmdDraw(frame.command_buffer, static_cast<uint32_t>(icosahedron::indices.size()), 1, 0, 0);
